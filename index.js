@@ -16,10 +16,17 @@ const { authenticateToken } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// ⚠️ ВАЖНО: доверять прокси (для rate-limit на Render)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://admin-app-frontend.vercel.app'
+  ],
   credentials: true,
 }));
 app.use(express.json());
@@ -32,7 +39,7 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Инициализация БД
+// Инициализация БД (асинхронная)
 initDB();
 
 // Маршруты
