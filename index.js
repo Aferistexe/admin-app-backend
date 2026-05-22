@@ -20,8 +20,6 @@ app.set('trust proxy', 1);
 
 // ✅ ВРЕМЕННО: разрешаем все CORS запросы
 app.use(cors());
-app.options('*', cors());
-
 app.use(express.json());
 
 const limiter = rateLimit({
