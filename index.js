@@ -25,7 +25,9 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:3001',
-    'https://admin-app-frontend.vercel.app'
+    'https://admin-app-frontend.vercel.app',
+    'https://admin-app-frontend-8ghlg4qdb-admin-app-s-projects.vercel.app',
+    /\.vercel\.app$/  // разрешить все поддомены vercel.app
   ],
   credentials: true,
 }));
