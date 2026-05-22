@@ -5,18 +5,15 @@ const { getDB } = require('../db');
 
 const router = express.Router();
 
-// Логин (уже есть)
+// Логин
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const db = getDB();
 
   try {
-    const user = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM users WHERE username = ?', [username], (err, row) => {
-        if (err) reject(err);
-        resolve(row);
-      });
-    });
+    // PostgreSQL использует query, а не get
+    const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+    const user = result.rows[0];
 
     if (!user) {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
@@ -49,44 +46,29 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// 🔥 НОВЫЙ ЭНДПОИНТ: Регистрация (только для админов)
+// Регистрация
 router.post('/register', async (req, res) => {
   const { username, email, password, name, role } = req.body;
   const db = getDB();
 
-  // Проверка обязательных полей
   if (!username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
   }
 
   try {
-    // Проверка, существует ли пользователь
-    const existingUser = await new Promise((resolve, reject) => {
-      db.get('SELECT id FROM users WHERE username = ?', [username], (err, row) => {
-        if (err) reject(err);
-        resolve(row);
-      });
-    });
-
-    if (existingUser) {
+    // Проверка существования пользователя
+    const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+    if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
     }
 
-    // Хеширование пароля
     const passwordHash = await bcrypt.hash(password, 10);
     
-    // Создание пользователя
-    await new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO users (username, email, password_hash, name, role) 
-         VALUES (?, ?, ?, ?, ?)`,
-        [username, email || `${username}@local.com`, passwordHash, name || username, role || 'user'],
-        function(err) {
-          if (err) reject(err);
-          resolve(this.lastID);
-        }
-      );
-    });
+    await db.query(
+      `INSERT INTO users (username, email, password_hash, name, role) 
+       VALUES ($1, $2, $3, $4, $5)`,
+      [username, email || `${username}@local.com`, passwordHash, name || username, role || 'user']
+    );
 
     res.status(201).json({ 
       message: 'Пользователь создан',
