@@ -10,15 +10,11 @@ router.get('/', authenticateToken, checkRole(['admin']), async (req, res) => {
   const db = getDB();
   
   try {
-    const users = await new Promise((resolve, reject) => {
-      db.all('SELECT id, username, name, role, created_at FROM users', (err, rows) => {
-        if (err) reject(err);
-        resolve(rows);
-      });
-    });
-    res.json(users);
+    const result = await db.query('SELECT id, username, name, role, created_at FROM users');
+    res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Ошибка загрузки' });
+    console.error('GET /api/users error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки пользователей' });
   }
 });
 
@@ -28,15 +24,10 @@ router.delete('/:id', authenticateToken, checkRole(['admin']), async (req, res) 
   const db = getDB();
   
   try {
-    await new Promise((resolve, reject) => {
-      db.run('DELETE FROM users WHERE id = ? AND username != "admin"', [id], (err) => {
-        if (err) reject(err);
-        resolve();
-      });
-    });
-    
+    await db.query('DELETE FROM users WHERE id = $1 AND username != $2', [id, 'admin']);
     res.json({ message: 'Пользователь удалён' });
   } catch (err) {
+    console.error('DELETE /api/users error:', err);
     res.status(500).json({ error: 'Ошибка удаления' });
   }
 });
@@ -53,16 +44,10 @@ router.put('/:id/password', authenticateToken, checkRole(['admin']), async (req,
   
   try {
     const passwordHash = await bcrypt.hash(password, 10);
-    
-    await new Promise((resolve, reject) => {
-      db.run('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, id], (err) => {
-        if (err) reject(err);
-        resolve();
-      });
-    });
-    
+    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, id]);
     res.json({ message: 'Пароль изменён' });
   } catch (err) {
+    console.error('PUT /api/users/password error:', err);
     res.status(500).json({ error: 'Ошибка смены пароля' });
   }
 });
