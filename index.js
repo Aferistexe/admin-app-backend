@@ -34,7 +34,7 @@ initDB();
 app.use('/api/auth', authRoutes);
 app.use('/api/admins', authenticateToken, adminRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
-app.use('/api/users', usersRoutes);
+app.use('/api/users', authenticateToken, usersRoutes);  // ← ДОБАВЛЕН authenticateToken
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
