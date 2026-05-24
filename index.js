@@ -31,10 +31,35 @@ app.use('/api/', limiter);
 
 initDB();
 
+// ========== Эндпоинт для получения аватара из Steam ==========
+app.get('/api/steam/avatar/:steamid', async (req, res) => {
+  const { steamid } = req.params;
+  const STEAM_API_KEY = process.env.STEAM_API_KEY;
+  
+  if (!STEAM_API_KEY) {
+    return res.status(500).json({ error: 'Steam API key not configured' });
+  }
+  
+  try {
+    // Используем fetch (доступен в Node 18+)
+    const response = await fetch(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${steamid}`);
+    const data = await response.json();
+    
+    if (data?.response?.players?.[0]?.avatarmedium) {
+      res.json({ avatar: data.response.players[0].avatarmedium });
+    } else {
+      res.status(404).json({ error: 'Avatar not found' });
+    }
+  } catch (error) {
+    console.error('Steam API error:', error);
+    res.status(500).json({ error: 'Failed to fetch avatar' });
+  }
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admins', authenticateToken, adminRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
-app.use('/api/users', authenticateToken, usersRoutes);  // ← ДОБАВЛЕН authenticateToken
+app.use('/api/users', authenticateToken, usersRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
