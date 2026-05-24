@@ -41,7 +41,6 @@ app.get('/api/steam/avatar/:steamid', async (req, res) => {
   }
   
   try {
-    // Используем fetch (доступен в Node 18+)
     const response = await fetch(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${steamid}`);
     const data = await response.json();
     
@@ -53,6 +52,42 @@ app.get('/api/steam/avatar/:steamid', async (req, res) => {
   } catch (error) {
     console.error('Steam API error:', error);
     res.status(500).json({ error: 'Failed to fetch avatar' });
+  }
+});
+
+// ========== Эндпоинт для отправки в Discord (безопасно) ==========
+app.post('/api/discord/send', async (req, res) => {
+  const { message, username = 'Система' } = req.body;
+  const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+  
+  if (!DISCORD_WEBHOOK_URL) {
+    return res.status(500).json({ error: 'Discord webhook not configured' });
+  }
+  
+  if (!message || message.trim().length === 0) {
+    return res.status(400).json({ error: 'Пустое сообщение' });
+  }
+  
+  try {
+    const response = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: username,
+        content: message,
+        allowed_mentions: { parse: ['users', 'roles'] }
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `Discord error: ${response.status}`);
+    }
+    
+    res.json({ success: true, message: 'Отправлено в Discord' });
+  } catch (error) {
+    console.error('Discord send error:', error);
+    res.status(500).json({ error: error.message || 'Ошибка отправки в Discord' });
   }
 });
 
