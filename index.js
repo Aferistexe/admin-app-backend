@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -56,8 +56,9 @@ app.get('/api/steam/avatar/:steamid', async (req, res) => {
 });
 
 // ========== Эндпоинт для отправки в Discord (безопасно) ==========
+// ========== Эндпоинт для отправки в Discord (безопасно) ==========
 app.post('/api/discord/send', async (req, res) => {
-  const { message, username = 'Система' } = req.body;
+  const { message, username = 'Система', avatar_url } = req.body;  // 👈 ДОБАВИЛ avatar_url
   const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
   
   if (!DISCORD_WEBHOOK_URL) {
@@ -69,14 +70,21 @@ app.post('/api/discord/send', async (req, res) => {
   }
   
   try {
+    const payload = {
+      username: username,
+      content: message,
+      allowed_mentions: { parse: ['users', 'roles'] }
+    };
+    
+    // 👇 ДОБАВЛЯЕМ АВАТАРКУ, если она передана
+    if (avatar_url) {
+      payload.avatar_url = avatar_url;
+    }
+    
     const response = await fetch(DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: username,
-        content: message,
-        allowed_mentions: { parse: ['users', 'roles'] }
-      })
+      body: JSON.stringify(payload)
     });
     
     if (!response.ok) {
