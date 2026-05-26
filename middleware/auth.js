@@ -1,12 +1,9 @@
 const jwt = require('jsonwebtoken');
 
-// ==========================================
-// Проверка JWT токена
-// ==========================================
-
+// Проверка токена
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Токен не предоставлен' });
@@ -21,10 +18,7 @@ function authenticateToken(req, res, next) {
   }
 }
 
-// ==========================================
-// Проверка роли пользователя
-// ==========================================
-
+// Проверка роли
 function checkRole(allowedRoles) {
   return (req, res, next) => {
     if (!req.user) {
@@ -39,10 +33,7 @@ function checkRole(allowedRoles) {
   };
 }
 
-// ==========================================
-// ЭКСПОРТ (важно!)
-// ==========================================
-
+// ⚠️ ВАЖНО: экспортировать ОБЕ функции объектом
 module.exports = {
   authenticateToken,
   checkRole
