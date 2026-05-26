@@ -2,29 +2,23 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { getDB } = require('../db');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ==========================================
-// ЛОГИН
+// ЛОГИН (доступен всем)
 // ==========================================
 
-/**
- * POST /api/auth/login
- * Вход в систему, возвращает JWT токен
- */
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const db = getDB();
 
-  // Валидация входных данных
   if (!username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
   }
 
   try {
-    // Поиск пользователя в БД
     const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
     const user = result.rows[0];
 
@@ -32,13 +26,11 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
 
-    // Проверка пароля
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
 
-    // Создание JWT токена
     const accessToken = jwt.sign(
       { 
         id: user.id, 
@@ -50,7 +42,6 @@ router.post('/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
-    // Отправка ответа
     res.json({
       accessToken,
       user: {
@@ -68,16 +59,10 @@ router.post('/login', async (req, res) => {
 });
 
 // ==========================================
-// ПРОВЕРКА ТОКЕНА (НОВЫЙ ЭНДПОИНТ!)
+// ПРОВЕРКА ТОКЕНА
 // ==========================================
 
-/**
- * GET /api/auth/verify
- * Проверяет валидность JWT токена
- * Требует заголовок Authorization: Bearer <token>
- */
 router.get('/verify', authenticateToken, (req, res) => {
-  // Если middleware authenticateToken пропустил запрос — токен валиден
   res.json({ 
     valid: true, 
     user: { 
@@ -90,74 +75,68 @@ router.get('/verify', authenticateToken, (req, res) => {
 });
 
 // ==========================================
-// РЕГИСТРАЦИЯ
+// ✅ РЕГИСТРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНОВ)
 // ==========================================
 
-/**
- * POST /api/auth/register
- * Регистрация нового пользователя
- */
-router.post('/register', async (req, res) => {
-  const { username, email, password, name, role } = req.body;
-  const db = getDB();
+router.post('/register', 
+  authenticateToken,      // 1. Проверяем, что есть токен
+  checkRole(['admin']),   // 2. Проверяем, что роль = admin
+  async (req, res) => {
+    const { username, email, password, name, role } = req.body;
+    const db = getDB();
 
-  // Валидация
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Логин и пароль обязательны' });
-  }
-
-  if (username.length < 3) {
-    return res.status(400).json({ error: 'Логин должен быть не менее 3 символов' });
-  }
-
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Пароль должен быть не менее 6 символов' });
-  }
-
-  try {
-    // Проверка существования пользователя
-    const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
+    // Валидация
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Логин и пароль обязательны' });
     }
 
-    // Хеширование пароля
-    const passwordHash = await bcrypt.hash(password, 10);
-    
-    // Создание пользователя
-    const newUserRole = role || 'user';
-    const newUserName = name || username;
-    const newUserEmail = email || `${username}@local.com`;
-    
-    await db.query(
-      `INSERT INTO users (username, email, password_hash, name, role) 
-       VALUES ($1, $2, $3, $4, $5)`,
-      [username, newUserEmail, passwordHash, newUserName, newUserRole]
-    );
+    if (username.length < 3) {
+      return res.status(400).json({ error: 'Логин должен быть не менее 3 символов' });
+    }
 
-    // Успешный ответ
-    res.status(201).json({ 
-      message: 'Пользователь создан',
-      user: { 
-        username, 
-        name: newUserName, 
-        role: newUserRole 
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Пароль должен быть не менее 6 символов' });
+    }
+
+    try {
+      // Проверка существования пользователя
+      const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
       }
-    });
-  } catch (err) {
-    console.error('Register error:', err);
-    res.status(500).json({ error: 'Ошибка создания пользователя' });
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      
+      // 🔒 Безопасность: не даём создать админа через API
+      const newRole = (role === 'admin') ? 'user' : (role || 'user');
+      const newUserName = name || username;
+      const newUserEmail = email || `${username}@local.com`;
+      
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, name, role) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [username, newUserEmail, passwordHash, newUserName, newRole]
+      );
+
+      res.status(201).json({ 
+        message: 'Пользователь создан',
+        user: { 
+          username, 
+          name: newUserName, 
+          role: newRole 
+        }
+      });
+    } catch (err) {
+      console.error('Register error:', err);
+      res.status(500).json({ error: 'Ошибка создания пользователя' });
+    }
   }
-});
+);
 
 // ==========================================
 // ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТЕКУЩЕМ ПОЛЬЗОВАТЕЛЕ
 // ==========================================
 
-/**
- * GET /api/auth/me
- * Возвращает информацию о текущем авторизованном пользователе
- */
 router.get('/me', authenticateToken, async (req, res) => {
   const db = getDB();
   
@@ -182,16 +161,11 @@ router.get('/me', authenticateToken, async (req, res) => {
 // СМЕНА ПАРОЛЯ
 // ==========================================
 
-/**
- * POST /api/auth/change-password
- * Смена пароля текущего пользователя
- */
 router.post('/change-password', authenticateToken, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   const db = getDB();
   const userId = req.user.id;
 
-  // Валидация
   if (!oldPassword || !newPassword) {
     return res.status(400).json({ error: 'Старый и новый пароль обязательны' });
   }
@@ -201,7 +175,6 @@ router.post('/change-password', authenticateToken, async (req, res) => {
   }
 
   try {
-    // Получаем текущий хеш пароля
     const result = await db.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
     const user = result.rows[0];
 
@@ -209,16 +182,12 @@ router.post('/change-password', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
 
-    // Проверяем старый пароль
     const isValid = await bcrypt.compare(oldPassword, user.password_hash);
     if (!isValid) {
       return res.status(401).json({ error: 'Неверный старый пароль' });
     }
 
-    // Хешируем новый пароль
     const newPasswordHash = await bcrypt.hash(newPassword, 10);
-    
-    // Обновляем пароль
     await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newPasswordHash, userId]);
 
     res.json({ message: 'Пароль успешно изменён' });
@@ -227,5 +196,58 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
+// ==========================================
+// ✅ СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только админы)
+// ==========================================
+
+router.get('/users', 
+  authenticateToken,
+  checkRole(['admin']),
+  async (req, res) => {
+    const db = getDB();
+    
+    try {
+      const result = await db.query(
+        'SELECT id, username, name, role, email, created_at FROM users ORDER BY id'
+      );
+      
+      res.json({ users: result.rows });
+    } catch (err) {
+      console.error('Get users error:', err);
+      res.status(500).json({ error: 'Ошибка сервера' });
+    }
+  }
+);
+
+// ==========================================
+// ✅ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (только админы)
+// ==========================================
+
+router.delete('/users/:id',
+  authenticateToken,
+  checkRole(['admin']),
+  async (req, res) => {
+    const { id } = req.params;
+    const db = getDB();
+    
+    if (parseInt(id) === req.user.id) {
+      return res.status(400).json({ error: 'Нельзя удалить самого себя' });
+    }
+    
+    try {
+      const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      
+      res.json({ message: 'Пользователь удалён' });
+    } catch (err) {
+      console.error('Delete user error:', err);
+      res.status(500).json({ error: 'Ошибка сервера' });
+    }
+  }
+);
 
 module.exports = router;
