@@ -138,21 +138,43 @@ app.get('/api/health', (req, res) => {
 // ========================
 // 8. STEAM API (защищённый)
 // ========================
+// ========================
+// 8. STEAM API (с запасным вариантом без ключа)
+// ========================
 app.get('/api/steam/avatar/:steamid', 
     authenticateToken,
     async (req, res) => {
         const { steamid } = req.params;
         const STEAM_API_KEY = process.env.STEAM_API_KEY;
         
-        if (!STEAM_API_KEY) {
-            return res.status(500).json({ error: 'Steam API key not configured' });
-        }
-        
         // Валидация steamid
         if (!steamid || steamid.length < 10 || steamid.length > 20) {
             return res.status(400).json({ error: 'Invalid Steam ID format' });
         }
         
+        // ✅ Если ключа нет — используем прямой URL (без API)
+        if (!STEAM_API_KEY) {
+            console.log(`⚠️ Steam API key not configured, using direct URL for ${steamid}`);
+            
+            // Прямой URL аватарки Steam (работает без ключа!)
+            const avatarUrl = `https://avatars.steamstatic.com/${steamid}_medium.jpg`;
+            
+            // Проверяем, существует ли аватар (опционально)
+            try {
+                const checkResponse = await fetch(avatarUrl, { method: 'HEAD' });
+                if (checkResponse.ok) {
+                    return res.json({ avatar: avatarUrl });
+                } else {
+                    // Стандартная аватарка, если пользователь не найден
+                    return res.json({ avatar: 'https://avatars.steamstatic.com/default_avatar_medium.jpg' });
+                }
+            } catch (error) {
+                // В случае ошибки — возвращаем стандартную аватарку
+                return res.json({ avatar: 'https://avatars.steamstatic.com/default_avatar_medium.jpg' });
+            }
+        }
+        
+        // ✅ Если ключ есть — используем официальное API
         try {
             const response = await fetch(
                 `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${steamid}`
@@ -162,11 +184,15 @@ app.get('/api/steam/avatar/:steamid',
             if (data?.response?.players?.[0]?.avatarmedium) {
                 res.json({ avatar: data.response.players[0].avatarmedium });
             } else {
-                res.status(404).json({ error: 'Avatar not found' });
+                // Fallback на прямой URL
+                const fallbackUrl = `https://avatars.steamstatic.com/${steamid}_medium.jpg`;
+                res.json({ avatar: fallbackUrl });
             }
         } catch (error) {
             console.error('Steam API error:', error);
-            res.status(500).json({ error: 'Failed to fetch avatar' });
+            // Fallback на прямой URL при ошибке API
+            const fallbackUrl = `https://avatars.steamstatic.com/${steamid}_medium.jpg`;
+            res.json({ avatar: fallbackUrl });
         }
     }
 );
