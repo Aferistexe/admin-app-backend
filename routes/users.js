@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken'); // ← ДОБАВИТЬ для генерации нового токена
 const { getDB } = require('../db');
 const { authenticateToken, checkRole } = require('../middleware/auth');
 
@@ -49,7 +50,6 @@ router.delete('/:id',
     }
 
     try {
-      // ✅ Проверяем, существует ли пользователь, и удаляем
       const result = await db.query(
         'DELETE FROM users WHERE id = $1 AND username != $2 RETURNING id',
         [id, 'admin']
@@ -68,6 +68,87 @@ router.delete('/:id',
 );
 
 // ==========================================
+// СМЕНИТЬ РОЛЬ ПОЛЬЗОВАТЕЛЯ (только админы)
+// ==========================================
+// 🆕 НОВЫЙ ЭНДПОИНТ ДЛЯ ПОВЫШЕНИЯ ДО АДМИНА
+
+router.put('/:id/role', 
+  authenticateToken, 
+  checkRole(['admin']), 
+  async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+    const db = getDB();
+
+    // Валидация роли
+    const allowedRoles = ['user', 'admin', 'moderator'];
+    if (!role || !allowedRoles.includes(role)) {
+      return res.status(400).json({ error: 'Неверная роль' });
+    }
+
+    // ✅ Запрещаем изменять роль главного админа (id=1)
+    if (parseInt(id) === 1) {
+      return res.status(403).json({ error: 'Нельзя изменить роль главного администратора' });
+    }
+
+    try {
+      // Проверяем, существует ли пользователь
+      const userExists = await db.query('SELECT id, username FROM users WHERE id = $1', [id]);
+      if (userExists.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+
+      // Обновляем роль
+      await db.query('UPDATE users SET role = $1 WHERE id = $2', [role, id]);
+
+      // ✅ Если обновляем роль ТЕКУЩЕГО пользователя — генерируем новый токен
+      if (parseInt(id) === req.user.id) {
+        // Получаем обновлённые данные пользователя
+        const updatedUser = await db.query(
+          'SELECT id, username, name, role, email FROM users WHERE id = $1',
+          [id]
+        );
+        
+        const user = updatedUser.rows[0];
+        
+        // Генерируем новый JWT токен с обновлённой ролью
+        const newToken = jwt.sign(
+          { 
+            id: user.id, 
+            username: user.username, 
+            role: user.role,
+            name: user.name
+          },
+          process.env.JWT_SECRET,
+          { expiresIn: '24h' }
+        );
+
+        console.log(`🔄 Роль пользователя ${user.username} изменена на ${role}, выдан новый токен`);
+        
+        return res.json({ 
+          message: `Роль изменена на ${role}`,
+          newToken,  // ← Отправляем новый токен
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            role: user.role,
+            email: user.email
+          }
+        });
+      }
+
+      console.log(`✅ Роль пользователя ${userExists.rows[0].username} изменена на ${role} администратором ${req.user.id}`);
+      res.json({ message: `Роль изменена на ${role}` });
+      
+    } catch (err) {
+      console.error('PUT /api/users/role error:', err);
+      res.status(500).json({ error: 'Ошибка изменения роли' });
+    }
+  }
+);
+
+// ==========================================
 // СМЕНИТЬ ПАРОЛЬ ПОЛЬЗОВАТЕЛЯ (только админы)
 // ==========================================
 
@@ -79,7 +160,6 @@ router.put('/:id/password',
     const { password } = req.body;
     const db = getDB();
 
-    // ✅ Более строгая валидация пароля
     if (!password) {
       return res.status(400).json({ error: 'Пароль обязателен' });
     }
@@ -88,13 +168,13 @@ router.put('/:id/password',
       return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
     }
 
-    // ✅ Проверка на сложность пароля (опционально)
-    if (password === '123456' || password === 'password' || password === 'qwerty') {
+    // Чёрный список простых паролей
+    const weakPasswords = ['123456', 'password', 'qwerty', '12345', '12345678', '111111'];
+    if (weakPasswords.includes(password)) {
       return res.status(400).json({ error: 'Слишком простой пароль' });
     }
 
     try {
-      // ✅ Сначала проверяем, существует ли пользователь
       const userExists = await db.query('SELECT id FROM users WHERE id = $1', [id]);
       if (userExists.rows.length === 0) {
         return res.status(404).json({ error: 'Пользователь не найден' });
@@ -151,7 +231,6 @@ router.post('/',
     const { username, email, password, name, role } = req.body;
     const db = getDB();
 
-    // ✅ Валидация
     if (!username || !password) {
       return res.status(400).json({ error: 'Логин и пароль обязательны' });
     }
@@ -165,7 +244,6 @@ router.post('/',
     }
 
     try {
-      // ✅ Проверка существования
       const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
       if (existing.rows.length > 0) {
         return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
