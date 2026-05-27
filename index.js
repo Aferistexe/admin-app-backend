@@ -2,15 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const csrf = require('csurf');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
-const bcrypt = require('bcrypt');
+const csrf = require('csurf');
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-const { initDB, getUserById, updatePassword, updateEmail } = require('./db');
+const { initDB } = require('./db');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admins');
 const teamRoutes = require('./routes/team');
@@ -25,48 +24,42 @@ app.set('trust proxy', 1);
 // ========================
 // 1. БЕЗОПАСНАЯ КОНФИГУРАЦИЯ CORS
 // ========================
-const allowedOrigins = [
-    'https://adminpanel.myarena.site',
-    'https://myarena.site',
-    'http://localhost:3000'  // для разработки (убрать в production)
-];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,https://adminpanel.myarena.site').split(',');
 
 const corsOptions = {
     origin: function(origin, callback) {
-        // Разрешить запросы без origin (например, из мобильных приложений)
+        // Разрешить запросы без origin (из мобильных приложений, curl и т.д.)
         if (!origin) return callback(null, true);
         
         if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
             callback(null, true);
         } else {
+            console.log(`Blocked CORS from: ${origin}`);
             callback(new Error('Не разрешено CORS политикой'));
         }
     },
-    credentials: true,  // Разрешить отправку cookies
+    credentials: true,
     optionsSuccessStatus: 200,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'CSRF-Token']
+    allowedHeaders: ['Content-Type', 'Authorization', 'CSRF-Token', 'X-CSRF-Token']
 };
 
 // ========================
-// 2. MIDDLEWARE (порядок важен!)
+// 2. MIDDLEWARE (порядок ВАЖЕН!)
 // ========================
-app.use(helmet());  // Защита HTTP заголовков
-
-// Настройка Content Security Policy
-app.use(
-    helmet.contentSecurityPolicy({
+app.use(helmet({
+    contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],  // Убрать 'unsafe-inline' в production
+            scriptSrc: ["'self'", "'unsafe-inline'"],
             styleSrc: ["'self'", "'unsafe-inline'"],
             imgSrc: ["'self'", "data:", "https://steamcdn-a.akamaihd.net", "https://avatars.steamstatic.com"],
             connectSrc: ["'self'", "https://api.steampowered.com", "https://discord.com"],
             frameAncestors: ["'none'"],
             formAction: ["'self'"],
         },
-    })
-);
+    },
+}));
 
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -74,17 +67,18 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // ========================
-// 3. БЕЗОПАСНАЯ СЕССИЯ
+// 3. БЕЗОПАСНАЯ СЕССИЯ (необходима для CSRF)
 // ========================
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-super-secret-key-change-this',
+    secret: process.env.SESSION_SECRET || 'default-secret-key-change-in-production',
     resave: false,
     saveUninitialized: false,
+    name: 'sessionId',
     cookie: {
-        secure: process.env.NODE_ENV === 'production',  // HTTPS только в production
-        httpOnly: true,   // Защита от XSS
-        sameSite: 'strict', // Защита от CSRF
-        maxAge: 24 * 60 * 60 * 1000  // 24 часа
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        sameSite: 'strict',
+        maxAge: 24 * 60 * 60 * 1000 // 24 часа
     }
 }));
 
@@ -95,37 +89,32 @@ const csrfProtection = csrf({
     cookie: {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict'
+        sameSite: 'strict',
+        key: 'csrfToken'
     }
 });
 
-// Эндпоинт для получения CSRF токена
+// Эндпоинт для получения CSRF токена (доступен всем)
 app.get('/api/csrf-token', csrfProtection, (req, res) => {
     res.json({ csrfToken: req.csrfToken() });
 });
 
 // ========================
-// 5. RATE LIMITING
+// 5. GLOBAL RATE LIMITING
 // ========================
 const globalLimiter = rateLimit({
-    windowMs: 5 * 60 * 1000, // 5 минут
+    windowMs: 5 * 60 * 1000,
     max: 200,
     message: 'Слишком много запросов, попробуйте позже',
     standardHeaders: true,
     legacyHeaders: false,
 });
 
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 минут
-    max: 5,
-    message: 'Слишком много попыток входа. Попробуйте через 15 минут.',
+const sensitiveLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Слишком много запросов. Попробуйте через 15 минут.',
     skipSuccessfulRequests: true,
-});
-
-const discordLimiter = rateLimit({
-    windowMs: 60 * 1000, // 1 минута
-    max: 5,
-    message: 'Слишком много запросов в Discord. Подождите минуту.',
 });
 
 app.use('/api/', globalLimiter);
@@ -142,7 +131,7 @@ app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        environment: process.env.NODE_ENV
+        environment: process.env.NODE_ENV || 'development'
     });
 });
 
@@ -160,8 +149,8 @@ app.get('/api/steam/avatar/:steamid',
         }
         
         // Валидация steamid
-        if (!steamid || steamid.length < 10) {
-            return res.status(400).json({ error: 'Invalid Steam ID' });
+        if (!steamid || steamid.length < 10 || steamid.length > 20) {
+            return res.status(400).json({ error: 'Invalid Steam ID format' });
         }
         
         try {
@@ -188,7 +177,7 @@ app.get('/api/steam/avatar/:steamid',
 app.post('/api/discord/send', 
     authenticateToken,
     csrfProtection,
-    discordLimiter,
+    sensitiveLimiter,
     async (req, res) => {
         const { message, username = 'Система', avatar_url } = req.body;
         const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
@@ -206,11 +195,16 @@ app.post('/api/discord/send',
             return res.status(400).json({ error: 'Сообщение слишком длинное (макс. 2000 символов)' });
         }
         
+        // Защита от упоминаний @everyone и @here
+        const sanitizedMessage = message
+            .replace(/@everyone/g, '@everyone\u200B')
+            .replace(/@here/g, '@here\u200B');
+        
         try {
             const payload = {
-                username: username.substring(0, 32), // Discord лимит
-                content: message.substring(0, 2000),
-                allowed_mentions: { parse: [] } // Отключаем упоминания для безопасности
+                username: username.substring(0, 32),
+                content: sanitizedMessage.substring(0, 2000),
+                allowed_mentions: { parse: [] } // Отключаем упоминания
             };
             
             if (avatar_url && avatar_url.startsWith('https://')) {
@@ -237,119 +231,22 @@ app.post('/api/discord/send',
 );
 
 // ========================
-// 10. СМЕНА EMAIL (защищённый)
+// 10. ЗАЩИЩЁННЫЕ РОУТЫ
 // ========================
-app.post('/api/user/email',
-    authenticateToken,
-    csrfProtection,
-    async (req, res) => {
-        const { email } = req.body;
-        const userId = req.user.id;
-        
-        // Валидация email
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!email || !emailRegex.test(email)) {
-            return res.status(400).json({ error: 'Неверный формат email' });
-        }
-        
-        try {
-            // Проверка, не занят ли email
-            const existingUser = await getUserByEmail(email);
-            if (existingUser && existingUser.id !== userId) {
-                return res.status(409).json({ error: 'Email уже используется' });
-            }
-            
-            await updateEmail(userId, email);
-            
-            // Отправить уведомление на старый email
-            await sendEmailNotification(req.user.email, 'Email изменён', `Ваш email изменён на ${email}`);
-            
-            res.json({ success: true, message: 'Email успешно изменён' });
-        } catch (error) {
-            console.error('Email change error:', error);
-            res.status(500).json({ error: 'Ошибка изменения email' });
-        }
-    }
-);
-
-// ========================
-// 11. СМЕНА ПАРОЛЯ (защищённый)
-// ========================
-app.post('/api/auth/change-password',
-    authenticateToken,
-    csrfProtection,
-    authLimiter,
-    async (req, res) => {
-        const { old_password, new_password } = req.body;
-        const userId = req.user.id;
-        
-        // Валидация пароля
-        if (!old_password || !new_password) {
-            return res.status(400).json({ error: 'Все поля обязательны' });
-        }
-        
-        if (new_password.length < 8) {
-            return res.status(400).json({ error: 'Новый пароль должен быть не менее 8 символов' });
-        }
-        
-        if (new_password.length > 128) {
-            return res.status(400).json({ error: 'Пароль слишком длинный' });
-        }
-        
-        try {
-            // 1. Получить пользователя с текущим паролем
-            const user = await getUserById(userId);
-            if (!user) {
-                return res.status(404).json({ error: 'Пользователь не найден' });
-            }
-            
-            // 2. Проверить старый пароль
-            const isValid = await bcrypt.compare(old_password, user.password_hash);
-            if (!isValid) {
-                return res.status(401).json({ error: 'Неверный текущий пароль' });
-            }
-            
-            // 3. Проверить, не совпадает ли новый пароль со старым
-            const isSame = await bcrypt.compare(new_password, user.password_hash);
-            if (isSame) {
-                return res.status(400).json({ error: 'Новый пароль должен отличаться от текущего' });
-            }
-            
-            // 4. Хешировать новый пароль
-            const newHash = await bcrypt.hash(new_password, 10);
-            
-            // 5. Обновить пароль
-            await updatePassword(userId, newHash);
-            
-            // 6. Отправить уведомление
-            await sendEmailNotification(user.email, 'Пароль изменён', 
-                'Ваш пароль был успешно изменён. Если это были не вы, немедленно свяжитесь с поддержкой.'
-            );
-            
-            res.json({ success: true, message: 'Пароль успешно изменён' });
-        } catch (error) {
-            console.error('Password change error:', error);
-            res.status(500).json({ error: 'Ошибка изменения пароля' });
-        }
-    }
-);
-
-// ========================
-// 12. ЗАЩИЩЁННЫЕ РОУТЫ
-// ========================
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/admins', authenticateToken, csrfProtection, adminRoutes);
 app.use('/api/team', authenticateToken, csrfProtection, teamRoutes);
 app.use('/api/users', authenticateToken, csrfProtection, usersRoutes);
 
 // ========================
-// 13. ОБРАБОТКА ОШИБОК
+// 11. ОБРАБОТЧИКИ ОШИБОК
 // ========================
 
 // Обработка CSRF ошибок
 app.use((err, req, res, next) => {
     if (err.code === 'EBADCSRFTOKEN') {
-        return res.status(403).json({ error: 'Неверный CSRF токен' });
+        console.warn('CSRF token validation failed:', req.method, req.path);
+        return res.status(403).json({ error: 'Неверный CSRF токен. Обновите страницу и попробуйте снова.' });
     }
     next(err);
 });
@@ -361,10 +258,13 @@ app.use((req, res) => {
 
 // Глобальная обработка ошибок
 app.use((err, req, res, next) => {
-    console.error('Error:', err.message);
-    console.error(err.stack);
+    console.error('Server error:', {
+        message: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+        url: req.url,
+        method: req.method
+    });
     
-    // Не показываем детали ошибки в production
     const message = process.env.NODE_ENV === 'production' 
         ? 'Внутренняя ошибка сервера' 
         : err.message;
@@ -373,10 +273,14 @@ app.use((err, req, res, next) => {
 });
 
 // ========================
-// 14. ЗАПУСК СЕРВЕРА
+// 12. ЗАПУСК СЕРВЕРА
 // ========================
 app.listen(PORT, () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`);
     console.log(`🔗 http://localhost:${PORT}`);
     console.log(`🌍 Режим: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔒 CSRF защита: Включена`);
+    console.log(`🍪 Cookie security: ${process.env.NODE_ENV === 'production' ? 'Secure' : 'Development'}`);
 });
+
+module.exports = app;
