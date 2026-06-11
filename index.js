@@ -142,7 +142,6 @@ app.get('/api/health', (req, res) => {
 // 8. STEAM API (с запасным вариантом без ключа)
 // ========================
 app.get('/api/steam/avatar/:steamid', 
-    authenticateToken,
     async (req, res) => {
         const { steamid } = req.params;
         const STEAM_API_KEY = process.env.STEAM_API_KEY;
