@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -142,7 +142,10 @@ app.get('/api/health', (req, res) => {
 // 8. STEAM API (с запасным вариантом без ключа)
 // ========================
 app.get('/api/steam/avatar/:steamid', 
+<<<<<<< HEAD
     authenticateToken,
+=======
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
     async (req, res) => {
         const { steamid } = req.params;
         const STEAM_API_KEY = process.env.STEAM_API_KEY;
@@ -309,4 +312,8 @@ app.listen(PORT, () => {
     console.log(`🍪 Cookie security: ${process.env.NODE_ENV === 'production' ? 'Secure' : 'Development'}`);
 });
 
+<<<<<<< HEAD
 module.exports = app;
+=======
+module.exports = app;
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3

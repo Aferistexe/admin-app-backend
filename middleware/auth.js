@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ﻿const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -6,6 +7,14 @@ const { getDB, logAction } = require('../db');
 const { authenticateToken, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
+=======
+const jwt = require('jsonwebtoken');
+
+// Проверка токена
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 
 // ==========================================
 // RATE LIMITING ДЛЯ ЛОГИНА
@@ -135,6 +144,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
+<<<<<<< HEAD
 });
 
 // ==========================================
@@ -451,3 +461,27 @@ router.delete('/users/:id',
 );
 
 module.exports = router;
+=======
+}
+
+// Проверка роли
+function checkRole(allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Пользователь не авторизован' });
+    }
+
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Недостаточно прав' });
+    }
+
+    next();
+  };
+}
+
+// ⚠️ ВАЖНО: экспортировать ОБЕ функции объектом
+module.exports = {
+  authenticateToken,
+  checkRole
+};
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3

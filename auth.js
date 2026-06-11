@@ -1,13 +1,18 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+<<<<<<< HEAD
 const rateLimit = require('express-rate-limit');
 const { getDB, logAction } = require('../db');
+=======
+const { getDB } = require('../db');
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 const { authenticateToken, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ==========================================
+<<<<<<< HEAD
 // RATE LIMITING ДЛЯ ЛОГИНА
 // ==========================================
 const loginLimiter = rateLimit({
@@ -23,10 +28,20 @@ const loginLimiter = rateLimit({
 // 🚪 ЛОГИН (с защитой от brute force)
 // ==========================================
 router.post('/login', loginLimiter, async (req, res) => {
+=======
+// ЛОГИН (доступен всем)
+// ==========================================
+
+router.post('/login', async (req, res) => {
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
   const { username, password } = req.body;
   const db = getDB();
   const ipAddress = req.ip;
   const userAgent = req.get('User-Agent');
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Логин и пароль обязательны' });
+  }
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
@@ -82,10 +97,22 @@ router.post('/login', loginLimiter, async (req, res) => {
       });
     }
 
+<<<<<<< HEAD
     // Успешный вход — сбрасываем счётчик
     await db.query(
       'UPDATE users SET login_attempts = 0, locked_until = NULL, last_login = NOW() WHERE id = $1',
       [user.id]
+=======
+    const accessToken = jwt.sign(
+      { 
+        id: user.id, 
+        username: user.username, 
+        role: user.role,
+        name: user.name
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
     );
 
     // Генерируем токены
@@ -139,6 +166,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // ==========================================
+<<<<<<< HEAD
 // 🔄 ОБНОВЛЕНИЕ ACCESS TOKEN (refresh token flow)
 // ==========================================
 router.post('/refresh', async (req, res) => {
@@ -198,10 +226,106 @@ router.post('/refresh', async (req, res) => {
     }
     console.error('Refresh error:', err);
     res.status(401).json({ error: 'Invalid refresh token' });
+=======
+// ✅ РЕГИСТРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНОВ)
+// ==========================================
+
+/**
+ * POST /api/auth/register
+ * 🔐 ТОЛЬКО ДЛЯ ПОЛЬЗОВАТЕЛЕЙ С РОЛЬЮ "admin"
+ * Создаёт нового пользователя
+ */
+router.post('/register', 
+  authenticateToken,      // 1. Проверяем, что есть токен
+  checkRole(['admin']),   // 2. Проверяем, что роль = admin
+  async (req, res) => {
+    const { username, email, password, name, role } = req.body;
+    const db = getDB();
+
+    // Валидация
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Логин и пароль обязательны' });
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({ error: 'Логин должен быть минимум 3 символа' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Пароль должен быть минимум 6 символов' });
+    }
+
+    try {
+      // Проверка существования пользователя
+      const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      
+      // Разрешаем создать пользователя с любой ролью (кроме admin, для безопасности)
+      const newRole = role === 'admin' ? 'user' : (role || 'user');
+      
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, name, role) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [username, email || `${username}@local.com`, passwordHash, name || username, newRole]
+      );
+
+      res.status(201).json({ 
+        message: 'Пользователь создан',
+        user: { username, name: name || username, role: newRole }
+      });
+    } catch (err) {
+      console.error('Register error:', err);
+      res.status(500).json({ error: 'Ошибка создания пользователя' });
+    }
+  }
+);
+
+// ==========================================
+// ✅ ПРОВЕРКА ТОКЕНА (для клиента)
+// ==========================================
+
+router.get('/verify', authenticateToken, (req, res) => {
+  res.json({ 
+    valid: true, 
+    user: { 
+      id: req.user.id, 
+      username: req.user.username,
+      role: req.user.role 
+    } 
+  });
+});
+
+// ==========================================
+// ✅ ИНФОРМАЦИЯ О ТЕКУЩЕМ ПОЛЬЗОВАТЕЛЕ
+// ==========================================
+
+router.get('/me', authenticateToken, async (req, res) => {
+  const db = getDB();
+  
+  try {
+    const result = await db.query(
+      'SELECT id, username, name, role, email, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    res.json({ user: result.rows[0] });
+  } catch (err) {
+    console.error('Get user error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
   }
 });
 
 // ==========================================
+<<<<<<< HEAD
 // 🚪 LOGOUT (отзыв refresh token)
 // ==========================================
 router.post('/logout', authenticateToken, async (req, res) => {
@@ -362,6 +486,11 @@ router.get('/me', authenticateToken, async (req, res) => {
 // ==========================================
 // ✅ СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только для админов)
 // ==========================================
+=======
+// ✅ СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только для админов)
+// ==========================================
+
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 router.get('/users', 
   authenticateToken,
   checkRole(['admin']),
@@ -370,7 +499,11 @@ router.get('/users',
     
     try {
       const result = await db.query(
+<<<<<<< HEAD
         'SELECT id, username, name, role, email, created_at, last_login, is_active, login_attempts FROM users ORDER BY id'
+=======
+        'SELECT id, username, name, role, email, created_at FROM users ORDER BY id'
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
       );
       
       res.json({ users: result.rows });
@@ -384,6 +517,10 @@ router.get('/users',
 // ==========================================
 // ✅ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (только для админов)
 // ==========================================
+<<<<<<< HEAD
+=======
+
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 router.delete('/users/:id',
   authenticateToken,
   checkRole(['admin']),
@@ -391,19 +528,30 @@ router.delete('/users/:id',
     const { id } = req.params;
     const db = getDB();
     
+<<<<<<< HEAD
+=======
+    // Не даём удалить самого себя
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
     if (parseInt(id) === req.user.id) {
       return res.status(400).json({ error: 'Нельзя удалить самого себя' });
     }
     
     try {
+<<<<<<< HEAD
       const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [id]);
+=======
+      const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
       
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Пользователь не найден' });
       }
       
+<<<<<<< HEAD
       await logAction(req.user.id, 'user_deleted', 'user', parseInt(id), { deleted_username: result.rows[0].username }, req.ip, req.get('User-Agent'));
       
+=======
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
       res.json({ message: 'Пользователь удалён' });
     } catch (err) {
       console.error('Delete user error:', err);
@@ -412,4 +560,8 @@ router.delete('/users/:id',
   }
 );
 
+<<<<<<< HEAD
 module.exports = router;
+=======
+module.exports = router;
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3

@@ -1,13 +1,18 @@
-﻿const express = require('express');
+const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+<<<<<<< HEAD
 const rateLimit = require('express-rate-limit');
 const { getDB, logAction } = require('../db');
+=======
+const { getDB } = require('../db');
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 const { authenticateToken, checkRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ==========================================
+<<<<<<< HEAD
 // RATE LIMITING ДЛЯ ЛОГИНА
 // ==========================================
 const loginLimiter = rateLimit({
@@ -23,10 +28,20 @@ const loginLimiter = rateLimit({
 // 🚪 ЛОГИН (с защитой от brute force)
 // ==========================================
 router.post('/login', loginLimiter, async (req, res) => {
+=======
+// ЛОГИН (доступен всем)
+// ==========================================
+
+router.post('/login', async (req, res) => {
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
   const { username, password } = req.body;
   const db = getDB();
   const ipAddress = req.ip;
   const userAgent = req.get('User-Agent');
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Логин и пароль обязательны' });
+  }
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
@@ -81,10 +96,22 @@ router.post('/login', loginLimiter, async (req, res) => {
       });
     }
 
+<<<<<<< HEAD
     // Успешный вход — сбрасываем счётчик
     await db.query(
       'UPDATE users SET login_attempts = 0, locked_until = NULL, last_login = NOW() WHERE id = $1',
       [user.id]
+=======
+    const accessToken = jwt.sign(
+      { 
+        id: user.id, 
+        username: user.username, 
+        role: user.role,
+        name: user.name
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
     );
 
     // Генерируем токены
@@ -138,6 +165,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // ==========================================
+<<<<<<< HEAD
 // 🔄 ОБНОВЛЕНИЕ ACCESS TOKEN (с rotation)
 // ==========================================
 router.post('/refresh', async (req, res) => {
@@ -223,10 +251,108 @@ router.post('/refresh', async (req, res) => {
     }
     console.error('Refresh error:', err);
     res.status(401).json({ error: 'Invalid refresh token' });
+=======
+// ПРОВЕРКА ТОКЕНА
+// ==========================================
+
+router.get('/verify', authenticateToken, (req, res) => {
+  res.json({ 
+    valid: true, 
+    user: { 
+      id: req.user.id, 
+      username: req.user.username,
+      role: req.user.role,
+      name: req.user.name
+    } 
+  });
+});
+
+// ==========================================
+// ✅ РЕГИСТРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНОВ)
+// ==========================================
+
+router.post('/register', 
+  authenticateToken,      // 1. Проверяем, что есть токен
+  checkRole(['admin']),   // 2. Проверяем, что роль = admin
+  async (req, res) => {
+    const { username, email, password, name, role } = req.body;
+    const db = getDB();
+
+    // Валидация
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Логин и пароль обязательны' });
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({ error: 'Логин должен быть не менее 3 символов' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Пароль должен быть не менее 6 символов' });
+    }
+
+    try {
+      // Проверка существования пользователя
+      const existing = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Пользователь с таким логином уже существует' });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      
+      // 🔒 Безопасность: не даём создать админа через API
+      const newRole = (role === 'admin') ? 'user' : (role || 'user');
+      const newUserName = name || username;
+      const newUserEmail = email || `${username}@local.com`;
+      
+      await db.query(
+        `INSERT INTO users (username, email, password_hash, name, role) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [username, newUserEmail, passwordHash, newUserName, newRole]
+      );
+
+      res.status(201).json({ 
+        message: 'Пользователь создан',
+        user: { 
+          username, 
+          name: newUserName, 
+          role: newRole 
+        }
+      });
+    } catch (err) {
+      console.error('Register error:', err);
+      res.status(500).json({ error: 'Ошибка создания пользователя' });
+    }
+  }
+);
+
+// ==========================================
+// ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТЕКУЩЕМ ПОЛЬЗОВАТЕЛЕ
+// ==========================================
+
+router.get('/me', authenticateToken, async (req, res) => {
+  const db = getDB();
+  
+  try {
+    const result = await db.query(
+      'SELECT id, username, name, role, email, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    res.json({ user: result.rows[0] });
+  } catch (err) {
+    console.error('Get user error:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
   }
 });
 
 // ==========================================
+<<<<<<< HEAD
 // 🚪 LOGOUT (отзыв refresh token)
 // ==========================================
 router.post('/logout', authenticateToken, async (req, res) => {
@@ -380,13 +506,56 @@ router.get('/me', authenticateToken, async (req, res) => {
     res.json({ user: result.rows[0] });
   } catch (err) {
     console.error('Get user error:', err);
+=======
+// СМЕНА ПАРОЛЯ
+// ==========================================
+
+router.post('/change-password', authenticateToken, async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  const db = getDB();
+  const userId = req.user.id;
+
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ error: 'Старый и новый пароль обязательны' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Новый пароль должен быть не менее 6 символов' });
+  }
+
+  try {
+    const result = await db.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const isValid = await bcrypt.compare(oldPassword, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Неверный старый пароль' });
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newPasswordHash, userId]);
+
+    res.json({ message: 'Пароль успешно изменён' });
+  } catch (err) {
+    console.error('Change password error:', err);
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
 
 // ==========================================
+<<<<<<< HEAD
 // ✅ СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только для админов)
 // ==========================================
+=======
+// ✅ СПИСОК ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только админы)
+// ==========================================
+
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 router.get('/users', 
   authenticateToken,
   checkRole(['admin']),
@@ -395,7 +564,11 @@ router.get('/users',
     
     try {
       const result = await db.query(
+<<<<<<< HEAD
         'SELECT id, username, name, role, email, created_at, last_login, is_active, login_attempts FROM users ORDER BY id'
+=======
+        'SELECT id, username, name, role, email, created_at FROM users ORDER BY id'
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
       );
       
       res.json({ users: result.rows });
@@ -407,8 +580,14 @@ router.get('/users',
 );
 
 // ==========================================
+<<<<<<< HEAD
 // ✅ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (только для админов)
 // ==========================================
+=======
+// ✅ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (только админы)
+// ==========================================
+
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
 router.delete('/users/:id',
   authenticateToken,
   checkRole(['admin']),
@@ -421,6 +600,7 @@ router.delete('/users/:id',
     }
     
     try {
+<<<<<<< HEAD
       // Получаем информацию о пользователе перед удалением
       const userResult = await db.query('SELECT id, username, role FROM users WHERE id = $1', [id]);
       
@@ -441,6 +621,13 @@ router.delete('/users/:id',
       const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [id]);
       
       await logAction(req.user.id, 'user_deleted', 'user', parseInt(id), { deleted_username: result.rows[0].username }, req.ip, req.get('User-Agent'));
+=======
+      const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
       
       res.json({ message: 'Пользователь удалён' });
     } catch (err) {
@@ -450,4 +637,8 @@ router.delete('/users/:id',
   }
 );
 
+<<<<<<< HEAD
 module.exports = router;
+=======
+module.exports = router;
+>>>>>>> 4bf7ee65154b3ddaea9f07427f0fe342a11143f3
