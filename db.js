@@ -10,6 +10,110 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
+// Функция для миграции существующей таблицы refresh_tokens
+const migrateRefreshTokens = async (client) => {
+  try {
+    console.log('🔄 Проверка структуры таблицы refresh_tokens...');
+    
+    // Проверяем существование колонки ip_address
+    const checkColumn = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'refresh_tokens' AND column_name = 'ip_address'
+    `);
+    
+    if (checkColumn.rows.length === 0) {
+      console.log('📦 Добавляем недостающие колонки в refresh_tokens...');
+      
+      // Добавляем колонку ip_address
+      try {
+        await client.query(`
+          ALTER TABLE refresh_tokens 
+          ADD COLUMN ip_address INET
+        `);
+        console.log('  ✓ Добавлена колонка ip_address');
+      } catch (err) {
+        if (!err.message.includes('duplicate column')) {
+          console.warn('  ⚠ Не удалось добавить ip_address:', err.message);
+        }
+      }
+      
+      // Добавляем колонку user_agent
+      try {
+        await client.query(`
+          ALTER TABLE refresh_tokens 
+          ADD COLUMN user_agent TEXT
+        `);
+        console.log('  ✓ Добавлена колонка user_agent');
+      } catch (err) {
+        if (!err.message.includes('duplicate column')) {
+          console.warn('  ⚠ Не удалось добавить user_agent:', err.message);
+        }
+      }
+      
+      // Добавляем колонку expires_at (если нет)
+      const checkExpires = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'refresh_tokens' AND column_name = 'expires_at'
+      `);
+      
+      if (checkExpires.rows.length === 0) {
+        await client.query(`
+          ALTER TABLE refresh_tokens 
+          ADD COLUMN expires_at TIMESTAMP
+        `);
+        console.log('  ✓ Добавлена колонка expires_at');
+      }
+      
+      // Добавляем колонку revoked (если нет)
+      const checkRevoked = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'refresh_tokens' AND column_name = 'revoked'
+      `);
+      
+      if (checkRevoked.rows.length === 0) {
+        await client.query(`
+          ALTER TABLE refresh_tokens 
+          ADD COLUMN revoked BOOLEAN DEFAULT FALSE
+        `);
+        console.log('  ✓ Добавлена колонка revoked');
+      }
+      
+      console.log('✅ Миграция refresh_tokens завершена');
+    } else {
+      console.log('✅ Таблица refresh_tokens уже имеет правильную структуру');
+    }
+  } catch (err) {
+    console.error('❌ Ошибка миграции:', err.message);
+    // Не выбрасываем ошибку, чтобы сервер продолжил работу
+  }
+};
+
+// Функция для проверки и создания функции cleanup_expired_tokens
+const ensureCleanupFunction = async (client) => {
+  try {
+    await client.query(`
+      CREATE OR REPLACE FUNCTION cleanup_expired_tokens()
+      RETURNS INTEGER AS $$
+      DECLARE
+        deleted_count INTEGER;
+      BEGIN
+        DELETE FROM refresh_tokens
+        WHERE expires_at < NOW() OR revoked = TRUE;
+        
+        GET DIAGNOSTICS deleted_count = ROW_COUNT;
+        RETURN deleted_count;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    console.log('✅ Функция cleanup_expired_tokens создана');
+  } catch (err) {
+    console.error('❌ Ошибка создания функции:', err.message);
+  }
+};
+
 const initDB = async () => {
   const client = await pool.connect();
   try {
@@ -33,6 +137,7 @@ const initDB = async () => {
         two_factor_enabled BOOLEAN DEFAULT FALSE
       )
     `);
+    console.log('✓ Таблица users проверена/создана');
 
     // 2. Таблица refresh_tokens
     await client.query(`
@@ -47,6 +152,7 @@ const initDB = async () => {
         user_agent TEXT
       )
     `);
+    console.log('✓ Таблица refresh_tokens проверена/создана');
 
     // 3. Таблица audit_logs
     await client.query(`
@@ -62,6 +168,7 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✓ Таблица audit_logs проверена/создана');
 
     // 4. Таблица api_keys
     await client.query(`
@@ -77,8 +184,17 @@ const initDB = async () => {
         expires_at TIMESTAMP
       )
     `);
+    console.log('✓ Таблица api_keys проверена/создана');
 
-    // 5. Индексы для производительности
+    // 5. Выполняем миграцию для существующей таблицы (добавляем недостающие колонки)
+    await migrateRefreshTokens(client);
+
+    // 6. Создаем функцию очистки токенов
+    await ensureCleanupFunction(client);
+
+    // 7. Индексы для производительности
+    console.log('🔍 Создание индексов...');
+    
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -97,26 +213,26 @@ const initDB = async () => {
       CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
       CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
     `);
+    console.log('✓ Индексы созданы');
 
-    // 6. Функция для очистки старых токенов
-    await client.query(`
-      CREATE OR REPLACE FUNCTION cleanup_expired_tokens()
-      RETURNS INTEGER AS $$
-      DECLARE
-        deleted_count INTEGER;
-      BEGIN
-        DELETE FROM refresh_tokens
-        WHERE expires_at < NOW() OR revoked = TRUE;
-        
-        GET DIAGNOSTICS deleted_count = ROW_COUNT;
-        RETURN deleted_count;
-      END;
-      $$ LANGUAGE plpgsql;
-    `);
+    // 8. Создаем администратора по умолчанию (если нет ни одного пользователя)
+    const userCount = await client.query('SELECT COUNT(*) FROM users');
+    if (parseInt(userCount.rows[0].count) === 0) {
+      const bcrypt = require('bcryptjs');
+      const defaultPassword = 'admin123';
+      const passwordHash = await bcrypt.hash(defaultPassword, 10);
+      
+      await client.query(`
+        INSERT INTO users (username, email, password_hash, name, role, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, ['admin', 'admin@localhost.com', passwordHash, 'Administrator', 'admin', true]);
+      
+      console.log('✓ Создан пользователь admin (пароль: admin123)');
+    }
 
-    console.log('✅ База данных PostgreSQL инициализирована');
+    console.log('✅ База данных PostgreSQL успешно инициализирована');
     console.log('📊 Таблицы: users, refresh_tokens, audit_logs, api_keys');
-    console.log('🔍 Индексы: созданы для оптимизации запросов');
+    
   } catch (err) {
     console.error('❌ DB init error:', err);
     throw err;
