@@ -186,13 +186,27 @@ const initDB = async () => {
     `);
     console.log('✓ Таблица api_keys проверена/создана');
 
-    // 5. Выполняем миграцию для существующей таблицы (добавляем недостающие колонки)
+    // 5. Таблица senior_metrics — редактируемые значения статистики старших
+    //     (выходы на смену, фасты). Нормы НЕ хранятся — они фиксированы по
+    //     категории на фронте. Запись создаётся/обновляется по steam64_id.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS senior_metrics (
+        steam64_id TEXT PRIMARY KEY,
+        shifts INTEGER NOT NULL DEFAULT 0,
+        fasts INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+    console.log('✓ Таблица senior_metrics проверена/создана');
+
+    // 6. Выполняем миграцию для существующей таблицы (добавляем недостающие колонки)
     await migrateRefreshTokens(client);
 
-    // 6. Создаем функцию очистки токенов
+    // 7. Создаем функцию очистки токенов
     await ensureCleanupFunction(client);
 
-    // 7. Индексы для производительности
+    // 8. Индексы для производительности
     console.log('🔍 Создание индексов...');
     
     await client.query(`
@@ -212,10 +226,12 @@ const initDB = async () => {
       
       CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
       CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+      
+      CREATE INDEX IF NOT EXISTS idx_senior_metrics_steam64_id ON senior_metrics(steam64_id);
     `);
     console.log('✓ Индексы созданы');
 
-    // 8. Создаем администратора по умолчанию (если нет ни одного пользователя)
+    // 9. Создаем администратора по умолчанию (если нет ни одного пользователя)
     const userCount = await client.query('SELECT COUNT(*) FROM users');
     if (parseInt(userCount.rows[0].count) === 0) {
       const bcrypt = require('bcryptjs');
@@ -231,7 +247,7 @@ const initDB = async () => {
     }
 
     console.log('✅ База данных PostgreSQL успешно инициализирована');
-    console.log('📊 Таблицы: users, refresh_tokens, audit_logs, api_keys');
+    console.log('📊 Таблицы: users, refresh_tokens, audit_logs, api_keys, senior_metrics');
     
   } catch (err) {
     console.error('❌ DB init error:', err);

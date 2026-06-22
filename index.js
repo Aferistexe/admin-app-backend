@@ -14,6 +14,7 @@ const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admins');
 const teamRoutes = require('./routes/team');
 const usersRoutes = require('./routes/users');
+const seniorRoutes = require('./routes/seniors');
 const { authenticateToken } = require('./middleware/auth');
 
 const app = express();
@@ -262,6 +263,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admins', authenticateToken, csrfProtection, adminRoutes);
 app.use('/api/team', authenticateToken, csrfProtection, teamRoutes);
 app.use('/api/users', authenticateToken, csrfProtection, usersRoutes);
+// /api/seniors — без csrfProtection: фронт ходит по Bearer-токену из localStorage,
+// а livewire-парсингу часов нужен спокойный доступ без CSRF-токена.
+app.use('/api/seniors', authenticateToken, seniorRoutes);
 
 // ========================
 // 11. ОБРАБОТЧИКИ ОШИБОК
