@@ -137,17 +137,37 @@ router.put('/metrics/:steam64Id', async (req, res) => {
 });
 
 // ==========================================
-// GET /api/seniors/weekly/week/:weekStart? — снимок одной недели
+// GET /api/seniors/weekly/week — снимок текущей недели
 // Query: ?ids=steam64,steam64,...
-// :weekStart — 'YYYY-MM-DD' (понедельник). Можно опустить → текущая неделя.
 // Возвращает: { week, metrics: { [steam64]: { tickets, hours, shifts, reports, fasts } } }
 // ==========================================
-router.get('/weekly/week/:weekStart?', async (req, res) => {
+router.get('/weekly/week', async (req, res) => {
   const rawIds = typeof req.query.ids === 'string' ? req.query.ids.split(',') : [];
   const ids = rawIds.filter(isValidSteam64).map(sanitizeSteam64);
-  const weekStart = typeof req.params.weekStart === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.params.weekStart)
-    ? req.params.weekStart
-    : null;
+
+  if (ids.length === 0) {
+    return res.json({ week: getCurrentWeekStart(), metrics: {} });
+  }
+
+  try {
+    const data = await getWeekSnapshot(null, ids);
+    res.json(data);
+  } catch (err) {
+    console.error('GET /api/seniors/weekly/week error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки недельного снимка' });
+  }
+});
+
+// ==========================================
+// GET /api/seniors/weekly/week/:weekStart — снимок конкретной недели
+// Query: ?ids=steam64,steam64,...
+// :weekStart — 'YYYY-MM-DD' (понедельник).
+// Возвращает: { week, metrics: { [steam64]: { tickets, hours, shifts, reports, fasts } } }
+// ==========================================
+router.get('/weekly/week/:weekStart', async (req, res) => {
+  const rawIds = typeof req.query.ids === 'string' ? req.query.ids.split(',') : [];
+  const ids = rawIds.filter(isValidSteam64).map(sanitizeSteam64);
+  const weekStart = /^\d{4}-\d{2}-\d{2}$/.test(req.params.weekStart) ? req.params.weekStart : null;
 
   if (ids.length === 0) {
     return res.json({ week: weekStart || getCurrentWeekStart(), metrics: {} });
@@ -157,7 +177,7 @@ router.get('/weekly/week/:weekStart?', async (req, res) => {
     const data = await getWeekSnapshot(weekStart, ids);
     res.json(data);
   } catch (err) {
-    console.error('GET /api/seniors/weekly/week error:', err);
+    console.error('GET /api/seniors/weekly/week/:weekStart error:', err);
     res.status(500).json({ error: 'Ошибка загрузки недельного снимка' });
   }
 });
