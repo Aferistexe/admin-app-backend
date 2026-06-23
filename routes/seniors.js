@@ -11,6 +11,12 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { getDB, logAction } = require('../db');
 const { fetchPlayerHours, fetchHoursBatch } = require('../lib/livewireHours');
+const {
+  setManualStart,
+  batchSnapshot,
+  getWeeklyData,
+  getCurrentWeekStart,
+} = require('../lib/weeklyHours');
 
 const router = express.Router();
 
@@ -159,6 +165,95 @@ router.post('/hours/batch', hoursLimiter, async (req, res) => {
   } catch (err) {
     console.error('POST /api/seniors/hours/batch error:', err);
     res.status(502).json({ error: 'Не удалось получить часы' });
+  }
+});
+
+// ==========================================
+// GET /api/seniors/weekly — недельные часы + история
+// Query: ?ids=steam64,steam64,...  (если не указано — пустой ответ)
+// Возвращает: { weekStart, current: { steam64: { startHours, endHours } }, history: [...] }
+// ==========================================
+router.get('/weekly', async (req, res) => {
+  const rawIds = typeof req.query.ids === 'string' ? req.query.ids.split(',') : [];
+  const ids = rawIds.filter(isValidSteam64).map(sanitizeSteam64);
+
+  if (ids.length === 0) {
+    return res.json({ weekStart: getCurrentWeekStart(), current: {}, history: [] });
+  }
+
+  try {
+    const data = await getWeeklyData(ids, 8);
+    res.json({ weekStart: getCurrentWeekStart(), ...data });
+  } catch (err) {
+    console.error('GET /api/seniors/weekly error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки недельных часов' });
+  }
+});
+
+// ==========================================
+// POST /api/seniors/weekly/start — ручной ввод старта недели
+// Body: { entries: [{ steam64, hours }] }
+// Конвертация часы→часы (как есть), upsert. userId — из токена.
+// Возвращает: { saved: number, weekStart }
+// ==========================================
+router.post('/weekly/start', async (req, res) => {
+  const { entries } = req.body || {};
+
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: 'Требуется массив entries' });
+  }
+  if (entries.length > 100) {
+    return res.status(400).json({ error: 'Максимум 100 записей за запрос' });
+  }
+
+  let saved = 0;
+  try {
+    for (const e of entries) {
+      const id = sanitizeSteam64(e?.steam64);
+      if (!isValidSteam64(id)) continue;
+      const hours = Number(e?.hours);
+      if (!Number.isFinite(hours) || hours < 0) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await setManualStart(id, Math.floor(hours), req.user?.id || null);
+      saved++;
+    }
+    res.json({ saved, weekStart: getCurrentWeekStart() });
+  } catch (err) {
+    console.error('POST /api/seniors/weekly/start error:', err);
+    res.status(500).json({ error: 'Ошибка сохранения старта недели' });
+  }
+});
+
+// ==========================================
+// POST /api/seniors/weekly/snapshot — ручной триггер снимка
+// Body: { ids: string[], when: 'start' | 'end' }
+// Дёргает Livewire и сохраняет снимок. Запасной путь, если cron пропустил.
+// Возвращает: { results: [{ steam64, ok, hours, error }] }
+// ==========================================
+router.post('/weekly/snapshot', hoursLimiter, async (req, res) => {
+  const { ids, when } = req.body || {};
+
+  if (when !== 'start' && when !== 'end') {
+    return res.status(400).json({ error: "when должен быть 'start' или 'end'" });
+  }
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Требуется массив ids' });
+  }
+  if (ids.length > 50) {
+    return res.status(400).json({ error: 'Максимум 50 id за запрос' });
+  }
+
+  const validIds = ids.filter(isValidSteam64).map(sanitizeSteam64);
+  if (validIds.length === 0) {
+    return res.status(400).json({ error: 'Нет валидных steam64_id' });
+  }
+
+  try {
+    const results = await batchSnapshot(validIds, when, req.user?.id || null, 5);
+    res.json({ results });
+  } catch (err) {
+    console.error('POST /api/seniors/weekly/snapshot error:', err);
+    res.status(502).json({ error: 'Не удалось сделать снимок' });
   }
 });
 

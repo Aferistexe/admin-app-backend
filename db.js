@@ -187,18 +187,44 @@ const initDB = async () => {
     console.log('✓ Таблица api_keys проверена/создана');
 
     // 5. Таблица senior_metrics — редактируемые значения статистики старших
-    //     (выходы на смену, фасты). Нормы НЕ хранятся — они фиксированы по
-    //     категории на фронте. Запись создаётся/обновляется по steam64_id.
+    //     (выходы на смену, фасты) + недельные снимки часов. Нормы НЕ хранятся —
+    //     они фиксированы по категории на фронте. Часы храним сразу в часах (не секундах).
     await client.query(`
       CREATE TABLE IF NOT EXISTS senior_metrics (
         steam64_id TEXT PRIMARY KEY,
         shifts INTEGER NOT NULL DEFAULT 0,
         fasts INTEGER NOT NULL DEFAULT 0,
+        week_start_hours INTEGER,
+        week_end_hours INTEGER,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
       )
     `);
     console.log('✓ Таблица senior_metrics проверена/создана');
+
+    // 5.1 Миграция: добавляем недельные колонки к существующей senior_metrics.
+    await client.query(`
+      ALTER TABLE senior_metrics
+        ADD COLUMN IF NOT EXISTS week_start_hours INTEGER,
+        ADD COLUMN IF NOT EXISTS week_end_hours INTEGER
+    `);
+    console.log('✓ Колонки week_start_hours/week_end_hours проверены');
+
+    // 5.2 История недельных часов по неделям (понедельник недели как ключ).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS senior_weekly_hours (
+        id SERIAL PRIMARY KEY,
+        steam64_id TEXT NOT NULL,
+        week_start DATE NOT NULL,
+        start_hours INTEGER,
+        end_hours INTEGER,
+        hours INTEGER,
+        status TEXT DEFAULT 'open',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(steam64_id, week_start)
+      )
+    `);
+    console.log('✓ Таблица senior_weekly_hours проверена/создана');
 
     // 6. Выполняем миграцию для существующей таблицы (добавляем недостающие колонки)
     await migrateRefreshTokens(client);
@@ -228,6 +254,8 @@ const initDB = async () => {
       CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
       
       CREATE INDEX IF NOT EXISTS idx_senior_metrics_steam64_id ON senior_metrics(steam64_id);
+      
+      CREATE INDEX IF NOT EXISTS idx_senior_weekly_steam_week ON senior_weekly_hours(steam64_id, week_start DESC);
     `);
     console.log('✓ Индексы созданы');
 
@@ -247,7 +275,7 @@ const initDB = async () => {
     }
 
     console.log('✅ База данных PostgreSQL успешно инициализирована');
-    console.log('📊 Таблицы: users, refresh_tokens, audit_logs, api_keys, senior_metrics');
+    console.log('📊 Таблицы: users, refresh_tokens, audit_logs, api_keys, senior_metrics, senior_weekly_hours');
     
   } catch (err) {
     console.error('❌ DB init error:', err);

@@ -123,7 +123,16 @@ app.use('/api/', globalLimiter);
 // ========================
 // 6. ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
 // ========================
-initDB();
+initDB()
+  .then(() => {
+    // Запуск cron-задач недельных снимков часов старших.
+    try {
+      require('./lib/scheduler').startScheduler();
+    } catch (err) {
+      console.error('Scheduler start failed:', err.message);
+    }
+  })
+  .catch((err) => console.error('initDB failed (server continues):', err.message));
 
 // ========================
 // 7. HEALTH CHECK (без защиты)
