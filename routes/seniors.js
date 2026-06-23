@@ -15,7 +15,9 @@ const {
   setManualStart,
   batchSnapshot,
   getWeeklyData,
+  getWeekSnapshot,
   getCurrentWeekStart,
+  upsertWeekMetrics,
 } = require('../lib/weeklyHours');
 
 const router = express.Router();
@@ -38,17 +40,17 @@ const isValidSteam64 = (v) => STEAM64_RE.test(sanitizeSteam64(v));
 
 // ==========================================
 // GET /api/seniors/metrics — все метрики одним словарём
-// Возвращает: { metrics: { [steam64_id]: { shifts, fasts } } }
+// Возвращает: { metrics: { [steam64_id]: { shifts, fasts, reports } } }
 // ==========================================
 router.get('/metrics', async (req, res) => {
   const db = getDB();
   try {
     const result = await db.query(
-      'SELECT steam64_id, shifts, fasts FROM senior_metrics ORDER BY updated_at DESC'
+      'SELECT steam64_id, shifts, fasts, reports FROM senior_metrics ORDER BY updated_at DESC'
     );
     const metrics = {};
     for (const row of result.rows) {
-      metrics[row.steam64_id] = { shifts: row.shifts, fasts: row.fasts };
+      metrics[row.steam64_id] = { shifts: row.shifts, fasts: row.fasts, reports: row.reports };
     }
     res.json({ metrics });
   } catch (err) {
@@ -59,7 +61,10 @@ router.get('/metrics', async (req, res) => {
 
 // ==========================================
 // PUT /api/seniors/metrics/:steam64Id — upsert метрик
-// Body: { shifts?: number, fasts?: number } — только переданные поля обновляются.
+// Body: { shifts?: number, fasts?: number, reports?: number } — только переданные поля обновляются.
+// Метрики синхронно пишутся и в senior_metrics, и в строку текущей недели
+// senior_weekly_hours (shifts/reports/fasts), чтобы навигация по неделям видела
+// актуальные значения уже сейчас, до закрытия недели cron'ом.
 // Возвращает обновлённую запись.
 // ==========================================
 router.put('/metrics/:steam64Id', async (req, res) => {
@@ -71,37 +76,49 @@ router.put('/metrics/:steam64Id', async (req, res) => {
   }
   const id = sanitizeSteam64(steam64Id);
 
-  const { shifts, fasts } = req.body || {};
+  const { shifts, fasts, reports } = req.body || {};
   const nextShifts = Number.isInteger(shifts) && shifts >= 0 ? shifts : null;
   const nextFasts = Number.isInteger(fasts) && fasts >= 0 ? fasts : null;
+  const nextReports = Number.isInteger(reports) && reports >= 0 ? reports : null;
 
-  if (nextShifts === null && nextFasts === null) {
-    return res.status(400).json({ error: 'Нужно указать shifts или fasts (целое ≥ 0)' });
+  if (nextShifts === null && nextFasts === null && nextReports === null) {
+    return res.status(400).json({ error: 'Нужно указать shifts, fasts или reports (целое ≥ 0)' });
   }
 
   try {
-    // Upsert: если запись есть — обновляем только переданные поля (COALESCE),
-    // иначе вставляем новую. updated_by — кто внёс изменение (логируется).
+    // Upsert в senior_metrics: обновляем только переданные поля (COALESCE).
     const result = await db.query(
-      `INSERT INTO senior_metrics (steam64_id, shifts, fasts, updated_by)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO senior_metrics (steam64_id, shifts, fasts, reports, updated_by)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (steam64_id) DO UPDATE
          SET shifts  = COALESCE($2, senior_metrics.shifts),
              fasts   = COALESCE($3, senior_metrics.fasts),
-             updated_by = $4,
+             reports = COALESCE($4, senior_metrics.reports),
+             updated_by = $5,
              updated_at = CURRENT_TIMESTAMP
-       RETURNING steam64_id, shifts, fasts, updated_at`,
-      [id, nextShifts, nextFasts, req.user?.id || null]
+       RETURNING steam64_id, shifts, fasts, reports, updated_at`,
+      [id, nextShifts, nextFasts, nextReports, req.user?.id || null]
     );
 
     const row = result.rows[0];
+
+    // Синхронизация метрик текущей недели в senior_weekly_hours.
+    const weekPatch = {};
+    if (nextShifts !== null) weekPatch.shifts = nextShifts;
+    if (nextReports !== null) weekPatch.reports = nextReports;
+    if (nextFasts !== null) weekPatch.fasts = nextFasts;
+    if (Object.keys(weekPatch).length > 0) {
+      await upsertWeekMetrics(id, weekPatch, req.user?.id || null).catch((e) =>
+        console.warn('upsertWeekMetrics failed:', e?.message)
+      );
+    }
 
     await logAction(
       req.user?.id || null,
       'senior_metric_updated',
       'senior_metric',
       null,
-      { steam64_id: id, shifts: row.shifts, fasts: row.fasts },
+      { steam64_id: id, shifts: row.shifts, fasts: row.fasts, reports: row.reports },
       req.ip,
       req.get('User-Agent')
     );
@@ -110,11 +127,38 @@ router.put('/metrics/:steam64Id', async (req, res) => {
       steam64_id: row.steam64_id,
       shifts: row.shifts,
       fasts: row.fasts,
+      reports: row.reports,
       updated_at: row.updated_at,
     });
   } catch (err) {
     console.error('PUT /api/seniors/metrics error:', err);
     res.status(500).json({ error: 'Ошибка сохранения метрики' });
+  }
+});
+
+// ==========================================
+// GET /api/seniors/weekly/week/:weekStart? — снимок одной недели
+// Query: ?ids=steam64,steam64,...
+// :weekStart — 'YYYY-MM-DD' (понедельник). Можно опустить → текущая неделя.
+// Возвращает: { week, metrics: { [steam64]: { tickets, hours, shifts, reports, fasts } } }
+// ==========================================
+router.get('/weekly/week/:weekStart?', async (req, res) => {
+  const rawIds = typeof req.query.ids === 'string' ? req.query.ids.split(',') : [];
+  const ids = rawIds.filter(isValidSteam64).map(sanitizeSteam64);
+  const weekStart = typeof req.params.weekStart === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.params.weekStart)
+    ? req.params.weekStart
+    : null;
+
+  if (ids.length === 0) {
+    return res.json({ week: weekStart || getCurrentWeekStart(), metrics: {} });
+  }
+
+  try {
+    const data = await getWeekSnapshot(weekStart, ids);
+    res.json(data);
+  } catch (err) {
+    console.error('GET /api/seniors/weekly/week error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки недельного снимка' });
   }
 });
 

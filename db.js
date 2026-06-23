@@ -187,13 +187,14 @@ const initDB = async () => {
     console.log('✓ Таблица api_keys проверена/создана');
 
     // 5. Таблица senior_metrics — редактируемые значения статистики старших
-    //     (выходы на смену, фасты) + недельные снимки часов. Нормы НЕ хранятся —
+    //     (выходы на смену, фасты, отчёты) + недельные снимки часов. Нормы НЕ хранятся —
     //     они фиксированы по категории на фронте. Часы храним сразу в часах (не секундах).
     await client.query(`
       CREATE TABLE IF NOT EXISTS senior_metrics (
         steam64_id TEXT PRIMARY KEY,
         shifts INTEGER NOT NULL DEFAULT 0,
         fasts INTEGER NOT NULL DEFAULT 0,
+        reports INTEGER NOT NULL DEFAULT 0,
         week_start_hours INTEGER,
         week_end_hours INTEGER,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -206,11 +207,24 @@ const initDB = async () => {
     await client.query(`
       ALTER TABLE senior_metrics
         ADD COLUMN IF NOT EXISTS week_start_hours INTEGER,
-        ADD COLUMN IF NOT EXISTS week_end_hours INTEGER
+        ADD COLUMN IF NOT EXISTS week_end_hours INTEGER,
+        ADD COLUMN IF NOT EXISTS reports INTEGER NOT NULL DEFAULT 0
     `);
-    console.log('✓ Колонки week_start_hours/week_end_hours проверены');
+    console.log('✓ Колонки week_start_hours/week_end_hours/reports проверены');
+
+    // 5.1.1 Миграция: колонки снимков метрик в senior_weekly_hours
+    // (tickets/shifts/reports/fasts за конкретную неделю; NULL = снимка нет).
+    await client.query(`
+      ALTER TABLE senior_weekly_hours
+        ADD COLUMN IF NOT EXISTS tickets INTEGER,
+        ADD COLUMN IF NOT EXISTS shifts INTEGER,
+        ADD COLUMN IF NOT EXISTS reports INTEGER,
+        ADD COLUMN IF NOT EXISTS fasts INTEGER
+    `);
+    console.log('✓ Колонки tickets/shifts/reports/fasts в senior_weekly_hours проверены');
 
     // 5.2 История недельных часов по неделям (понедельник недели как ключ).
+    //     При закрытии недели (вс 23:55) пишем полный снимок: tickets/shifts/reports/fasts.
     await client.query(`
       CREATE TABLE IF NOT EXISTS senior_weekly_hours (
         id SERIAL PRIMARY KEY,
@@ -219,6 +233,10 @@ const initDB = async () => {
         start_hours INTEGER,
         end_hours INTEGER,
         hours INTEGER,
+        tickets INTEGER,
+        shifts INTEGER,
+        reports INTEGER,
+        fasts INTEGER,
         status TEXT DEFAULT 'open',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(steam64_id, week_start)
