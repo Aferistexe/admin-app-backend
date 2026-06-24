@@ -501,7 +501,13 @@ router.post('/fasts/refresh', async (req, res) => {
 
 // ==========================================
 // GET /api/seniors/fasts — фасты за неделю (прокси odrp4.ru/api/faststats)
-// Возвращает: { fasts: { [steam64]: count } }
+// Возвращает: { fasts: { [name_lower]: count } }
+// ------------------------------------------
+// odrp4 отдаёт { logs: [{ name, helpers: [{name}] }] } — фасты НЕ индексируются
+// по steam64, а учитываются по отображаемому имени (ориганизатор + каждый хелпер).
+// Это в точности повторяет клиентский tally сайта odrp4 (loadRoster):
+//   fastTally[name.toLowerCase()] += 1  для log.name и каждого log.helpers[].name
+// Фронтенд матчит имя (lower) с real_name старшего. Поэтому ключи — имена, не steam64.
 // ==========================================
 router.get('/fasts', async (req, res) => {
   try {
@@ -514,23 +520,25 @@ router.get('/fasts', async (req, res) => {
       });
     }
 
-    // Ответ: { steam64: fastCount } — фильтруем только валидные steam64.
+    // Tally по отображаемому имени (как на самом сайте odrp4).
     const fasts = {};
-    if (typeof data === 'object' && !Array.isArray(data)) {
-      for (const [key, val] of Object.entries(data)) {
-        if (key === 'ok') continue;
-        const num = Number(val);
-        if (STEAM64_RE.test(key) && Number.isFinite(num)) {
-          fasts[key] = num;
-        }
+    const logs = Array.isArray(data?.logs) ? data.logs : [];
+    for (const log of logs) {
+      const org = (log?.name || '').trim().toLowerCase();
+      if (org) fasts[org] = (fasts[org] || 0) + 1;
+      const helpers = Array.isArray(log?.helpers) ? log.helpers : [];
+      for (const helper of helpers) {
+        const hn = (helper?.name || '').trim().toLowerCase();
+        if (hn) fasts[hn] = (fasts[hn] || 0) + 1;
       }
     }
 
-    res.json({ fasts });
+    res.json({ fasts, total: logs.length });
   } catch (err) {
     console.error('GET /api/seniors/fasts error:', err.message);
     res.status(502).json({
       fasts: {},
+      total: 0,
       error: err.message || 'Не удалось получить фасты',
     });
   }
