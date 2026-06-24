@@ -15,6 +15,22 @@ const router = express.Router();
 // Helper-функции из основного роутера (общий доступ к БД-сессии odrp4).
 const { ODRP4_BASE, getOdrp4Session, saveOdrp4Session, STEAM64_RE } = seniorRoutes.helpers;
 
+// Публичный URL бэкенда — нужен для формирования callback'а Steam.
+// Приоритет: env BACKEND_URL; иначе определяется из входящего запроса в роуте.
+const BACKEND_PUBLIC_URL_ENV = process.env.BACKEND_URL
+  ? process.env.BACKEND_URL.replace(/\/$/, '')
+  : null;
+
+// Определяет публичный URL бэкенда из входящего запроса (req),
+// с fallback на env BACKEND_URL. trust proxy включён в index.js,
+// поэтому req.protocol корректен за реверс-прокси/Render.
+const resolveBackendUrl = (req) => {
+  if (BACKEND_PUBLIC_URL_ENV) return BACKEND_PUBLIC_URL_ENV;
+  const proto = req.protocol; // http/https
+  const host = req.get('host'); // включает порт, если нестандартный
+  return `${proto}://${host}`;
+};
+
 // ==========================================
 // GET /api/seniors/fasts/auth — начало Steam-авторизации на odrp4.ru
 // Полностью server-side: бэкенд получает Steam OpenID URL у odrp4,
@@ -34,7 +50,7 @@ router.get('/fasts/auth', async (req, res) => {
     }
 
     // Подменяем return_to и realm, чтобы Steam вернулся к нам на callback.
-    const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    const backendUrl = resolveBackendUrl(req);
     const callbackUrl = `${backendUrl}/api/seniors/fasts/callback`;
 
     const modifiedUrl = authData.url
