@@ -277,6 +277,22 @@ const initDB = async () => {
     `);
     console.log('✓ Индексы созданы');
 
+    // 8.1 Таблица odrp4_sessions — хранение session_token для проксирования запросов к odrp4.ru
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS odrp4_sessions (
+        id SERIAL PRIMARY KEY,
+        session_token TEXT NOT NULL,
+        steam64 TEXT,
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✓ Таблица odrp4_sessions проверена/создана');
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_odrp4_sessions_expires ON odrp4_sessions(expires_at)
+    `);
+
     // 9. Создаем администратора по умолчанию (если нет ни одного пользователя)
     const userCount = await client.query('SELECT COUNT(*) FROM users');
     if (parseInt(userCount.rows[0].count) === 0) {

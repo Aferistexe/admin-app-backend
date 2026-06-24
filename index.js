@@ -276,6 +276,10 @@ app.use('/api/users', authenticateToken, csrfProtection, usersRoutes);
 // а livewire-парсингу часов нужен спокойный доступ без CSRF-токена.
 app.use('/api/seniors', authenticateToken, seniorRoutes);
 
+// Публичные роуты odrp4-авторизации (callback от Steam не имеет JWT).
+const seniorPublicRoutes = require('./routes/seniorsPublic');
+app.use('/api/seniors', seniorPublicRoutes);
+
 // ========================
 // 11. ОБРАБОТЧИКИ ОШИБОК
 // ========================
