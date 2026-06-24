@@ -22,8 +22,8 @@ const {
 } = require('../lib/weeklyHours');
 
 const {
-  isAutoEnabled,
-  refreshAndPersist,
+  getOpenIdUrl,
+  verifyAndPersist,
   tallyFastsForWeek,
 } = require('../lib/odrp4Auth');
 
@@ -366,51 +366,29 @@ const saveOdrp4Session = async (token, steam64) => {
 };
 
 /**
- * Прогоняет авто-вход odrp4 (Steam OpenID → sessionToken) и сохраняет токен в БД.
- * Работает только при заданном STEAM_LOGIN_SECURE. Возвращает { token, expiresAt } или кидает.
- * Делегирует персистентность в lib/odrp4Auth.refreshAndPersist (общая точка с cron).
+ * Делает запрос к odrp4.ru с авторизацией через X-Session-Token.
+ * 401/403 — сессия истекла. Серверно обновить нельзя (Steam привязывает токен
+ * входа к IP клиента), поэтому просто кидаем читаемую ошибку — фронт покажет
+ * кнопку повторного входа через popup Steam.
  */
-const runAutoRefresh = async () => {
-  if (!isAutoEnabled()) {
-    throw new Error('Авто-режим выключен (STEAM_LOGIN_SECURE не задан)');
-  }
-  return refreshAndPersist();
-};
-
-/** Делает запрос к odrp4.ru с авторизацией через X-Session-Token. */
 const odrp4Request = async (path, options = {}) => {
-  let sessionToken = await getOdrp4Session();
+  const sessionToken = await getOdrp4Session();
   if (!sessionToken) {
     throw new Error('Нет активной сессии odrp4.ru');
   }
 
-  const doFetch = (token) =>
-    fetch(ODRP4_BASE + path, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Token': token,
-        ...(options.headers || {}),
-      },
-    });
-
-  let res = await doFetch(sessionToken);
-
-  // 401/403 — сессия истекла. В авто-режиме обновляем один раз и ретраим.
-  if ((res.status === 401 || res.status === 403) && isAutoEnabled()) {
-    try {
-      const refreshed = await runAutoRefresh();
-      if (refreshed?.token) {
-        sessionToken = refreshed.token;
-        res = await doFetch(sessionToken);
-      }
-    } catch (err) {
-      console.error('odrp4 auto-refresh failed:', err.message);
-    }
-  }
+  const res = await fetch(ODRP4_BASE + path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Session-Token': sessionToken,
+      ...(options.headers || {}),
+    },
+  });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    // 401/403 = токен истёк/невалиден — требуется повторный вход (кнопка на фронте).
     throw new Error(`odrp4.ru ${res.status}: ${text}`);
   }
 
@@ -459,44 +437,59 @@ router.post('/fasts/token', async (req, res) => {
 
 // ==========================================
 // GET /api/seniors/fasts/status — статус подключения odrp4
-// Возвращает: { connected, auto, expiresAt }
-//   auto — задан ли STEAM_LOGIN_SECURE (сервер сам обновляет токен по cron).
+// Возвращает: { connected, expiresAt }
+//   connected — есть ли валидный (не истёкший) session-токен.
 //   expiresAt — ISO-время истечения текущего токена (или null).
+// (auto-режим убран: Steam привязывает токен к IP, серверно вход невозможен —
+//  токен подключается через браузерный popup, см. /fasts/verify.)
 // ==========================================
 router.get('/fasts/status', async (req, res) => {
-  const auto = isAutoEnabled();
   try {
     const row = await getOdrp4SessionRow();
     res.json({
       connected: !!row?.session_token,
-      auto,
       expiresAt: row?.expires_at ? new Date(row.expires_at).toISOString() : null,
     });
   } catch {
-    res.json({ connected: false, auto, expiresAt: null });
+    res.json({ connected: false, expiresAt: null });
   }
 });
 
 // ==========================================
-// POST /api/seniors/fasts/refresh — ручной запуск авто-обновления токена
-// Работает только в авто-режиме (STEAM_LOGIN_SECURE задан).
-// Прогоняет Steam OpenID → новый sessionToken → сохраняет в БД.
+// POST /api/seniors/fasts/login-url — Steam OpenID-ссылка для popup входа
+// Возвращает: { ok, url } — ссылку открывает фронт в window.open() (popup).
+// После входа Steam редиректит на odrp4 callback, который отдаёт tempToken
+// через postMessage — фронт ловит его и шлёт в /fasts/verify.
+// ==========================================
+router.post('/fasts/login-url', async (req, res) => {
+  try {
+    const url = await getOpenIdUrl();
+    res.json({ ok: true, url });
+  } catch (err) {
+    console.error('POST /api/seniors/fasts/login-url error:', err.message);
+    res.status(502).json({ ok: false, error: err.message || 'Не удалось получить ссылку входа Steam' });
+  }
+});
+
+// ==========================================
+// POST /api/seniors/fasts/verify — обмен tempToken на sessionToken
+// Body: { tempToken: string } — одноразовый, получен в браузере после входа Steam.
+// Бэкенд (единственная серверная часть флоу) обменивает его через
+// odrp4 /api/steam/verify и сохраняет постоянный sessionToken (~7ч) в БД.
 // Возвращает: { ok, connected, expiresAt } или { ok:false, error }.
 // ==========================================
-router.post('/fasts/refresh', async (req, res) => {
-  if (!isAutoEnabled()) {
-    return res.status(400).json({
-      ok: false,
-      error: 'Авто-режим выключен: задайте STEAM_LOGIN_SECURE на сервере',
-    });
+router.post('/fasts/verify', async (req, res) => {
+  const { tempToken } = req.body || {};
+  if (!tempToken || typeof tempToken !== 'string' || tempToken.length < 16) {
+    return res.status(400).json({ ok: false, error: 'Некорректный tempToken' });
   }
   try {
-    const { expiresAt } = await runAutoRefresh();
-    console.log('[odrp4] ручное обновление токена успешно, истекает', expiresAt.toISOString());
+    const { expiresAt } = await verifyAndPersist(tempToken.trim());
+    console.log('[odrp4] токен получен (verify), истекает', expiresAt.toISOString());
     res.json({ ok: true, connected: true, expiresAt: expiresAt.toISOString() });
   } catch (err) {
-    console.error('POST /api/seniors/fasts/refresh error:', err.message);
-    res.status(502).json({ ok: false, error: err.message || 'Не удалось обновить токен odrp4' });
+    console.error('POST /api/seniors/fasts/verify error:', err.message);
+    res.status(502).json({ ok: false, error: err.message || 'Не удалось обменять tempToken на sessionToken' });
   }
 });
 
