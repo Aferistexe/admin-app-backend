@@ -274,11 +274,8 @@ app.use('/api/team', authenticateToken, csrfProtection, teamRoutes);
 app.use('/api/users', authenticateToken, csrfProtection, usersRoutes);
 // /api/seniors — без csrfProtection: фронт ходит по Bearer-токену из localStorage,
 // а livewire-парсингу часов нужен спокойный доступ без CSRF-токена.
+// odrp4-прокси (фасты) тоже тут: /fasts, /fasts/token, /fasts/status — под JWT.
 app.use('/api/seniors', authenticateToken, seniorRoutes);
-
-// Публичные роуты odrp4-авторизации (callback от Steam не имеет JWT).
-const seniorPublicRoutes = require('./routes/seniorsPublic');
-app.use('/api/seniors', seniorPublicRoutes);
 
 // ========================
 // 11. ОБРАБОТЧИКИ ОШИБОК

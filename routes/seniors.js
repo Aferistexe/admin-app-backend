@@ -323,16 +323,16 @@ router.post('/weekly/snapshot', hoursLimiter, async (req, res) => {
 });
 
 // ==========================================
-// Вспомогательные функции для odrp4.ru proxy
-// (определены до использования роутом /fasts ниже — const не hoisted)
+// odrp4.ru PROXY — фасты за неделю
 // ==========================================
+// odrp4 отдаёт фасты через /api/faststats под session-токеном.
+// Токен нельзя получить серверно (Steam OpenID-валидация привязана к домену odrp4),
+// поэтому его вводит пользователь вручную (POST /fasts/token) — он хранится в БД.
+// GET /fasts делает запрос к odrp4 от лица сохранённого токена.
 
 const ODRP4_BASE = 'https://odrp4.ru';
 
-/**
- * Получает активный session_token из БД (не просроченный).
- * Используется защищённым роутом /fasts и публичным /fasts/callback.
- */
+/** Активный session_token из БД (не просроченный) или null. */
 const getOdrp4Session = async () => {
   const db = getDB();
   const result = await db.query(
@@ -343,17 +343,26 @@ const getOdrp4Session = async () => {
   return result.rows[0]?.session_token || null;
 };
 
-/**
- * Делает запрос к odrp4.ru с авторизацией через X-Session-Token.
- */
+/** Сохраняет session_token в БД (удаляет старые, вставляет новый). */
+const saveOdrp4Session = async (token, steam64) => {
+  const db = getDB();
+  const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000); // 6ч с запасом (token живёт ~7ч)
+  await db.query('DELETE FROM odrp4_sessions');
+  await db.query(
+    `INSERT INTO odrp4_sessions (session_token, steam64, expires_at)
+     VALUES ($1, $2, $3)`,
+    [token, steam64, expiresAt]
+  );
+};
+
+/** Делает запрос к odrp4.ru с авторизацией через X-Session-Token. */
 const odrp4Request = async (path, options = {}) => {
   const sessionToken = await getOdrp4Session();
   if (!sessionToken) {
-    throw new Error('Нет активной сессии odrp4.ru. Авторизуйтесь через /api/seniors/fasts/auth');
+    throw new Error('Нет активной сессии odrp4.ru');
   }
 
-  const url = ODRP4_BASE + path;
-  const res = await fetch(url, {
+  const res = await fetch(ODRP4_BASE + path, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -370,24 +379,61 @@ const odrp4Request = async (path, options = {}) => {
   return res.json();
 };
 
-/**
- * Сохраняет session_token в БД. Используется публичным роутером.
- */
-const saveOdrp4Session = async (token, steam64) => {
-  const db = getDB();
-  const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000); // 6ч с запасом (token живёт ~7ч)
-  await db.query('DELETE FROM odrp4_sessions');
-  await db.query(
-    `INSERT INTO odrp4_sessions (session_token, steam64, expires_at)
-     VALUES ($1, $2, $3)`,
-    [token, steam64, expiresAt]
-  );
-};
+// ==========================================
+// POST /api/seniors/fasts/token — сохранение sessionToken odrp4 (ручной ввод)
+// Body: { sessionToken: string }
+// Перед сохранением валидирует токен тестовым запросом к odrp4.
+// ==========================================
+router.post('/fasts/token', async (req, res) => {
+  const { sessionToken } = req.body || {};
+
+  if (!sessionToken || typeof sessionToken !== 'string' || sessionToken.length < 16) {
+    return res.status(400).json({ ok: false, error: 'Некорректный sessionToken' });
+  }
+
+  // Валидация: пробуем сделать запрос к odrp4 с этим токеном.
+  try {
+    const test = await fetch(`${ODRP4_BASE}/api/faststats`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Token': sessionToken,
+      },
+    });
+
+    if (test.status === 401 || test.status === 403) {
+      return res.status(401).json({ ok: false, error: 'Токен отклонён odrp4.ru (невалиден или истёк)' });
+    }
+    if (!test.ok) {
+      return res.status(502).json({ ok: false, error: `odrp4.ru ответил ${test.status}` });
+    }
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: 'Не удалось связаться с odrp4.ru' });
+  }
+
+  try {
+    await saveOdrp4Session(sessionToken.trim(), req.user?.id || null);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/seniors/fasts/token error:', err.message);
+    res.status(500).json({ ok: false, error: 'Не удалось сохранить токен' });
+  }
+});
+
+// ==========================================
+// GET /api/seniors/fasts/status — статус подключения odrp4
+// ==========================================
+router.get('/fasts/status', async (req, res) => {
+  try {
+    const token = await getOdrp4Session();
+    res.json({ connected: !!token });
+  } catch {
+    res.json({ connected: false });
+  }
+});
 
 // ==========================================
 // GET /api/seniors/fasts — фасты за неделю (прокси odrp4.ru/api/faststats)
 // Возвращает: { fasts: { [steam64]: count } }
-// Защищён: требует JWT (authenticateToken из index.js).
 // ==========================================
 router.get('/fasts', async (req, res) => {
   try {
@@ -422,6 +468,4 @@ router.get('/fasts', async (req, res) => {
   }
 });
 
-// Экспортируем helper-функции для использования в seniorsPublic.js
 module.exports = router;
-module.exports.helpers = { ODRP4_BASE, getOdrp4Session, saveOdrp4Session, STEAM64_RE };
