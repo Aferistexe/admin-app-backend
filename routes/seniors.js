@@ -21,6 +21,11 @@ const {
   upsertWeekMetrics,
 } = require('../lib/weeklyHours');
 
+const {
+  isAutoEnabled,
+  refreshAndPersist,
+} = require('../lib/odrp4Auth');
+
 const router = express.Router();
 
 // steam64 — 17 цифр.
@@ -332,16 +337,19 @@ router.post('/weekly/snapshot', hoursLimiter, async (req, res) => {
 
 const ODRP4_BASE = 'https://odrp4.ru';
 
-/** Активный session_token из БД (не просроченный) или null. */
-const getOdrp4Session = async () => {
+/** Активная сессия из БД (не просроченная) или null. */
+const getOdrp4SessionRow = async () => {
   const db = getDB();
   const result = await db.query(
-    `SELECT session_token, expires_at FROM odrp4_sessions
+    `SELECT session_token, steam64, expires_at FROM odrp4_sessions
      WHERE expires_at IS NULL OR expires_at > NOW()
      ORDER BY created_at DESC LIMIT 1`
   );
-  return result.rows[0]?.session_token || null;
+  return result.rows[0] || null;
 };
+
+/** Активный session_token из БД (не просроченный) или null. */
+const getOdrp4Session = async () => (await getOdrp4SessionRow())?.session_token || null;
 
 /** Сохраняет session_token в БД (удаляет старые, вставляет новый). */
 const saveOdrp4Session = async (token, steam64) => {
@@ -353,23 +361,52 @@ const saveOdrp4Session = async (token, steam64) => {
      VALUES ($1, $2, $3)`,
     [token, steam64, expiresAt]
   );
+  return expiresAt;
+};
+
+/**
+ * Прогоняет авто-вход odrp4 (Steam OpenID → sessionToken) и сохраняет токен в БД.
+ * Работает только при заданном STEAM_LOGIN_SECURE. Возвращает { token, expiresAt } или кидает.
+ * Делегирует персистентность в lib/odrp4Auth.refreshAndPersist (общая точка с cron).
+ */
+const runAutoRefresh = async () => {
+  if (!isAutoEnabled()) {
+    throw new Error('Авто-режим выключен (STEAM_LOGIN_SECURE не задан)');
+  }
+  return refreshAndPersist();
 };
 
 /** Делает запрос к odrp4.ru с авторизацией через X-Session-Token. */
 const odrp4Request = async (path, options = {}) => {
-  const sessionToken = await getOdrp4Session();
+  let sessionToken = await getOdrp4Session();
   if (!sessionToken) {
     throw new Error('Нет активной сессии odrp4.ru');
   }
 
-  const res = await fetch(ODRP4_BASE + path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Session-Token': sessionToken,
-      ...(options.headers || {}),
-    },
-  });
+  const doFetch = (token) =>
+    fetch(ODRP4_BASE + path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Token': token,
+        ...(options.headers || {}),
+      },
+    });
+
+  let res = await doFetch(sessionToken);
+
+  // 401/403 — сессия истекла. В авто-режиме обновляем один раз и ретраим.
+  if ((res.status === 401 || res.status === 403) && isAutoEnabled()) {
+    try {
+      const refreshed = await runAutoRefresh();
+      if (refreshed?.token) {
+        sessionToken = refreshed.token;
+        res = await doFetch(sessionToken);
+      }
+    } catch (err) {
+      console.error('odrp4 auto-refresh failed:', err.message);
+    }
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -421,13 +458,44 @@ router.post('/fasts/token', async (req, res) => {
 
 // ==========================================
 // GET /api/seniors/fasts/status — статус подключения odrp4
+// Возвращает: { connected, auto, expiresAt }
+//   auto — задан ли STEAM_LOGIN_SECURE (сервер сам обновляет токен по cron).
+//   expiresAt — ISO-время истечения текущего токена (или null).
 // ==========================================
 router.get('/fasts/status', async (req, res) => {
+  const auto = isAutoEnabled();
   try {
-    const token = await getOdrp4Session();
-    res.json({ connected: !!token });
+    const row = await getOdrp4SessionRow();
+    res.json({
+      connected: !!row?.session_token,
+      auto,
+      expiresAt: row?.expires_at ? new Date(row.expires_at).toISOString() : null,
+    });
   } catch {
-    res.json({ connected: false });
+    res.json({ connected: false, auto, expiresAt: null });
+  }
+});
+
+// ==========================================
+// POST /api/seniors/fasts/refresh — ручной запуск авто-обновления токена
+// Работает только в авто-режиме (STEAM_LOGIN_SECURE задан).
+// Прогоняет Steam OpenID → новый sessionToken → сохраняет в БД.
+// Возвращает: { ok, connected, expiresAt } или { ok:false, error }.
+// ==========================================
+router.post('/fasts/refresh', async (req, res) => {
+  if (!isAutoEnabled()) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Авто-режим выключен: задайте STEAM_LOGIN_SECURE на сервере',
+    });
+  }
+  try {
+    const { expiresAt } = await runAutoRefresh();
+    console.log('[odrp4] ручное обновление токена успешно, истекает', expiresAt.toISOString());
+    res.json({ ok: true, connected: true, expiresAt: expiresAt.toISOString() });
+  } catch (err) {
+    console.error('POST /api/seniors/fasts/refresh error:', err.message);
+    res.status(502).json({ ok: false, error: err.message || 'Не удалось обновить токен odrp4' });
   }
 });
 
