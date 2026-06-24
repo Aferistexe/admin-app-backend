@@ -24,6 +24,7 @@ const {
 const {
   isAutoEnabled,
   refreshAndPersist,
+  tallyFastsForWeek,
 } = require('../lib/odrp4Auth');
 
 const router = express.Router();
@@ -500,45 +501,39 @@ router.post('/fasts/refresh', async (req, res) => {
 });
 
 // ==========================================
-// GET /api/seniors/fasts — фасты за неделю (прокси odrp4.ru/api/faststats)
-// Возвращает: { fasts: { [name_lower]: count } }
+// GET /api/seniors/fasts — фасты за ТЕКУЩУЮ НЕДЕЛЮ (прокси odrp4.ru/api/faststats)
+// Возвращает: { fasts: { [name_lower]: count }, total, weekStart }
 // ------------------------------------------
-// odrp4 отдаёт { logs: [{ name, helpers: [{name}] }] } — фасты НЕ индексируются
-// по steam64, а учитываются по отображаемому имени (ориганизатор + каждый хелпер).
-// Это в точности повторяет клиентский tally сайта odrp4 (loadRoster):
-//   fastTally[name.toLowerCase()] += 1  для log.name и каждого log.helpers[].name
-// Фронтенд матчит имя (lower) с real_name старшего. Поэтому ключи — имена, не steam64.
+// odrp4 отдаёт ВСЮ историю в { logs: [{ name, helpers:[{name}], created_at }] }.
+// Норма фастов считается за неделю → оставляем только логи текущей недели
+// (с понедельника, как и норма часов). Логика tally — общая с cron-снимком
+// (lib/odrp4Auth.tallyFastsForWeek), чтобы live и снимок совпадали.
+//
+// Фасты НЕ индексируются по steam64 — учитываются по отображаемому имени
+// (организатор + каждый хелпер). Фронтенд матчит имя (lower) с real_name старшего.
 // ==========================================
 router.get('/fasts', async (req, res) => {
+  const weekStart = getCurrentWeekStart();
   try {
     const data = await odrp4Request('/api/faststats');
 
     if (!data || data.ok === false) {
       return res.status(502).json({
         fasts: {},
+        total: 0,
+        weekStart,
         error: data?.error || 'odrp4.ru вернул ошибку',
       });
     }
 
-    // Tally по отображаемому имени (как на самом сайте odrp4).
-    const fasts = {};
-    const logs = Array.isArray(data?.logs) ? data.logs : [];
-    for (const log of logs) {
-      const org = (log?.name || '').trim().toLowerCase();
-      if (org) fasts[org] = (fasts[org] || 0) + 1;
-      const helpers = Array.isArray(log?.helpers) ? log.helpers : [];
-      for (const helper of helpers) {
-        const hn = (helper?.name || '').trim().toLowerCase();
-        if (hn) fasts[hn] = (fasts[hn] || 0) + 1;
-      }
-    }
-
-    res.json({ fasts, total: logs.length });
+    const { fasts, total } = tallyFastsForWeek(data?.logs, weekStart);
+    res.json({ fasts, total, weekStart });
   } catch (err) {
     console.error('GET /api/seniors/fasts error:', err.message);
     res.status(502).json({
       fasts: {},
       total: 0,
+      weekStart,
       error: err.message || 'Не удалось получить фасты',
     });
   }
